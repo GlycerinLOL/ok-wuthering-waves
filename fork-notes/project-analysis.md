@@ -46,7 +46,7 @@ Fork 專用筆記，不屬於上游 mkdocs（`docs/`）。標 **[未驗證]** �
 
 觸發任務：AutoCombatTask（0.1s）、AutoPickTask、AutoLoginTask、AutoDialogTask（`SkipDialogTask.py`）、FastTravelTask（預設關）、MouseResetTask。
 
-程式碼存在但**沒有任何地方引用**（2026-11-04 grep `config.py`/`src`/`main*.py`）：`FarmMapTask`、`FiveToOneTask`、`DiagnosisTask`（config 中註解掉）、`CharacterCodeTask`、`src/gui/MultiAccountConfigTab.py`、`src/gui/CharacterCodeTab.py`。最近 commit「remove multi-account config tab」「Remove character code tab」從 config 拿掉了這兩個分頁，tests 仍引用它們。是否還被 ok-script plugin 機制載入 **[未驗證]**，不要假設已死或還活著。
+程式碼存在但**沒有任何地方引用**（2026-11-04 grep `config.py`/`src`/`main*.py`）：`FarmMapTask`、`FiveToOneTask`、`DiagnosisTask`（config 中註解掉）、`CharacterCodeTask`、`src/gui/MultiAccountConfigTab.py`、`src/gui/CharacterCodeTab.py`。兩個分頁原本由 `config.py` 的 `custom_tabs` 註冊，v3.7.15（`8979325e`）與 v3.7.17（`aa543c43`）把整個 `custom_tabs` 移除，GUI 已不再顯示；程式碼與 tests 仍留著。`MultiAccountConfigTask` 仍註冊，但設定改靠 `configs/MultiAccountConfig.json`（見 `docs/multi-account-config.md`）。
 
 常用 helper（新功能優先重用）：
 - 狀態：`in_team()`、`in_team_and_world`、`in_world`、`in_realm`、`is_main`、`ensure_main`、`wait_in_team_and_world`
@@ -112,5 +112,6 @@ zh_CN、zh_TW、ja_JP、ko_KR、es_ES；msgid 為英文原字串。流程：`tas
 - [x] ok-script 自帶 skill：`.venv/Lib/site-packages/ok/agent_resources/.agents/skills/`（develop、write-test、reload-tasks、generate-templates、setup-env、setup-project、use_venv）+ `agent_resources/docs/{mcp,feature-crops,agent-setup}.md`。模板管線是 `CocoTemplateStore` + `FeatureSet.generate_templates`。
 - [x] `src/Labels.py`：ok-script 3.0.3 內沒有產生器（grep 無結果）；歷史 commit 顯示與 coco 標註同 commit 手動加行。上游 skill 寫「generated」不準確。
 - [ ] `custom_tasks`/`plugin`：ok-script 有 `core/script_packager.py`（`ok_tasks/` + `manifest.json`）與 `core/plugins.py`（plugin 資料夾 / GitHub release 安裝）。fork 專用任務要不要放這裡，等第一個實際需求再決定。
-- [ ] `src/gui/*Tab.py`、未註冊任務是否還被載入（需實機或讀 ok-script 載入流程）
+- [x] `src/gui/*Tab.py`：原由 `custom_tabs` 註冊，v3.7.15/v3.7.17 移除，GUI 不再載入。
+- [ ] `FarmMapTask`、`FiveToOneTask`、`CharacterCodeTask` 是否還被任何機制載入（目前看來沒有）
 - [ ] MCP runtime（`python -m ok mcp --config config:config`）與 `uac: true` 是否需要系統管理員身分：尚未實測

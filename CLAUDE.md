@@ -65,6 +65,10 @@ Claude Code 不會自動載入 `.agents/skills/`，依任務手動讀對應 `SKI
 ## Fork / 上游同步
 
 - `origin` = 本 fork，`upstream` = ok-oldking。同步：`git fetch upstream && git merge upstream/master`（merge，不 rebase；master 已推送）。
+- 同步後必跑 `./.venv/Scripts/python.exe -u run_test.py tests/TestForkCharacterCodeTab.py`。fork 保留了上游已移除的「角色代碼」分頁（`config.py` 的 `custom_tabs`）：
+  - `config.py` 衝突 → 保留雙方，`custom_tabs` 那段留著。
+  - 上游刪了 `src/gui/CharacterCodeTab.py` 或它 import 的模組（`CustomCharLoader` 等）→ merge 不會報衝突、會靜默刪除，測試會抓到；用 `git checkout ORIG_HEAD -- <檔案>` 拿回來再修相容性。
+  - ok-script 拿掉 `custom_tabs` 支援 → 第三個測試失敗，需改用其他掛載方式，先回報使用者。
 - 功能開 branch（`feat/...`、`fix/...`），完成後 merge 回 master。
 - 降低衝突：優先新增檔案，少改熱檔（`BaseCombatTask.py`、`BaseWWTask.py`、`FarmEchoTask.py`、`CharFactory.py`、`BaseChar.py`）；`config.py` 任務清單只在尾端追加；不做順手格式化/重構。
 - 本檔用 `git add -f CLAUDE.md` 追蹤（上游 `.gitignore` 忽略它，同步不會衝突）。不要改上游 `.gitignore`；本機雜項（`.omc/`）放 `.git/info/exclude`。
