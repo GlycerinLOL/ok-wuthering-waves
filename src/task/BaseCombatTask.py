@@ -11,7 +11,7 @@ from ok import color_range_to_bound
 from ok import safe_get
 from src import text_white_color
 from src.char import BaseChar
-from src.char.BaseChar import SwitchPriority, dot_color  # noqa
+from src.char.BaseChar import SwitchPriority, dot_color, CharPerformTimeout  # noqa
 from src.char.CharFactory import apply_team_char_classes, get_char_by_pos
 from src.combat.CombatCheck import CombatCheck
 from src.task.BaseWWTask import isolate_white_text_to_black, binarize_for_matching
@@ -86,6 +86,8 @@ class BaseCombatTask(CombatCheck):
         self.use_liberation = True
         # 由副本恢复循环维护: 本轮从信标直接进本时, 退本即回到信标并自动回血
         self.realm_entry_at_heal_point = False
+        # (char, 上场时刻, 上限秒) 原生角色单次上场的硬超时, 见 BaseChar.PERFORM_HARD_TIMEOUT
+        self.perform_watch = None
 
     def reset_combat_state(self, reason='combat reset'):
         self.reset_to_false(reason)
@@ -695,6 +697,11 @@ class BaseCombatTask(CombatCheck):
             lowest_buff_remaining = self._lowest_buff_remaining_target(candidates)
             if lowest_buff_remaining:
                 return lowest_buff_remaining
+        elif self._starvation_guard_enabled():
+            # 两个辅助都没挂上 buff(协奏判满失灵、或者大世界小怪死得快)时会互相切个没完, 主C一直上不了场
+            waiting_main = self._main_dps_waiting_too_long(candidates)
+            if waiting_main:
+                return waiting_main
 
         unbuffed_non_main = self._unbuffed_non_main_target(current_char, candidates)
         if unbuffed_non_main:
@@ -717,6 +724,7 @@ class BaseCombatTask(CombatCheck):
 
         prioritized_candidates = []
         locked_healers = []
+        guard_starving = self._starvation_guard_enabled()
         for char in candidates:
             switch_priority = char.get_switch_priority(current_char=current_char, has_intro=has_intro,
                                                        target_low_con=target_low_con)
@@ -724,6 +732,15 @@ class BaseCombatTask(CombatCheck):
                 if switch_priority > SwitchPriority.NO:
                     locked_healers.append(char)
                 switch_priority = SwitchPriority.NO
+            if guard_starving:
+                switch_priority = self._starving_priority(char, switch_priority)
+                if (char.is_main_dps and not current_char.is_main_dps
+                        and self._off_field_seconds(char) > self.MAIN_DPS_MAX_WAIT
+                        and switch_priority < self.STARVE_PRIORITY):
+                    # 辅助报 MUST(比如穗穗太久没满协奏退场)也不能让主C一直等
+                    logger.info(f'switch starvation guard: main dps {char} off field '
+                                f'{self._off_field_seconds(char):.0f}s, priority {switch_priority} -> starve')
+                    switch_priority = self.STARVE_PRIORITY
             self._log_switch_candidate(char, switch_priority)
             if switch_priority > SwitchPriority.NO:
                 prioritized_candidates.append((switch_priority, char))
@@ -746,7 +763,10 @@ class BaseCombatTask(CombatCheck):
                 target = self._oldest_switch_target(candidates) or current_char
                 return self._log_switch_choice(
                     current_char, target, has_intro, f'priority_{highest_priority}')
-            target = self._choose_intro_switch_target(candidates) or current_char
+            target = None
+            if not current_char.is_main_dps and self._starvation_guard_enabled():
+                target = self._main_dps_waiting_too_long(candidates)
+            target = target or self._choose_intro_switch_target(candidates) or current_char
             if target != current_char and not target.is_main_dps and not target.has_buff():
                 reason = f'intro_unbuffed_{target.char_type.value.lower()}'
             else:
@@ -767,6 +787,48 @@ class BaseCombatTask(CombatCheck):
         else:
             reason = 'fallback_role_order'
         return self._log_switch_choice(current_char, target, has_intro, reason)
+
+    # 某个角色太久没上场(各家的 NO/MUST 互相顶住了), 逐级抬高他的优先级, 保证三个人都能轮到
+    STARVE_NORMAL_SECONDS = 40.0
+    STARVE_MUST_SECONDS = 70.0
+    # 饿到这个份上要压过别人自己报的 MUST
+    STARVE_PRIORITY = SwitchPriority.MUST + 50
+    # 辅助之间互切时, 主C离场超过这么久就先回主C
+    MAIN_DPS_MAX_WAIT = 25.0
+
+    def _off_field_seconds(self, char):
+        since = max(char.last_switch_time, self.combat_start)
+        if since <= 0:
+            return 0
+        return char.time_elapsed_accounting_for_freeze(since)
+
+    def _main_dps_waiting_too_long(self, candidates):
+        mains = [c for c in candidates if c.is_main_dps and self._off_field_seconds(c) > self.MAIN_DPS_MAX_WAIT]
+        if not mains:
+            return None
+        return max(mains, key=lambda c: self._off_field_seconds(c))
+
+    def _starvation_guard_enabled(self):
+        # 队里有自定义代码(宏自己管切人, 比如二人转轴)就不插手
+        for char in self.chars:
+            if char is None:
+                continue
+            if not char.native_perform():
+                return False
+            module = getattr(type(char).get_switch_priority, '__module__', '') or ''
+            if not module.startswith('src.char.'):
+                return False
+        return len([c for c in self.chars if c is not None]) >= 2
+
+    def _starving_priority(self, char, priority):
+        starved = self._off_field_seconds(char)
+        if starved > self.STARVE_MUST_SECONDS and priority < self.STARVE_PRIORITY:
+            logger.info(f'switch starvation guard: {char} off field {starved:.0f}s, priority {priority} -> starve')
+            return self.STARVE_PRIORITY
+        if starved > self.STARVE_NORMAL_SECONDS and priority < SwitchPriority.NORMAL:
+            logger.info(f'switch starvation guard: {char} off field {starved:.0f}s, priority {priority} -> NORMAL')
+            return SwitchPriority.NORMAL
+        return priority
 
     def _apply_intro_flags(self, current_char, switch_to, has_intro):
         switch_to.has_intro = has_intro
@@ -976,6 +1038,7 @@ class BaseCombatTask(CombatCheck):
             timeout (float): 休眠的秒数。
             check_combat (bool, optional): 是否在休眠前检查战斗状态。默认为 True。
         """
+        self.check_perform_watch()
         if self.skip_combat_check:
             return
         # self.log_debug(f'sleep_check {self._in_combat}')
@@ -984,8 +1047,66 @@ class BaseCombatTask(CombatCheck):
             if not self.in_combat():
                 self.raise_not_in_combat('sleep check not in combat')
 
+    # ---- 记住自己按住了什么, 角色上场异常退出时只松这些(不去碰玩家自己按着的键) ----
+    def _held(self):
+        held = self.__dict__.get('_held_inputs')
+        if held is None:
+            held = self.__dict__['_held_inputs'] = set()
+        return held
+
+    def send_key_down(self, key, after_sleep=0):
+        self._held().add(('key', str(key).lower()))
+        return super().send_key_down(key, after_sleep=after_sleep)
+
+    def send_key_up(self, key, after_sleep=0):
+        self._held().discard(('key', str(key).lower()))
+        return super().send_key_up(key, after_sleep=after_sleep)
+
+    def mouse_down(self, x=-1, y=-1, name=None, key="left"):
+        self._held().add(('mouse', key))
+        return super().mouse_down(x, y, name=name, key=key)
+
+    def mouse_up(self, name=None, key="left"):
+        self._held().discard(('mouse', key))
+        return super().mouse_up(name=name, key=key)
+
+    def release_held_inputs(self):
+        held = list(self._held())
+        for kind, key in held:
+            try:
+                if kind == 'mouse':
+                    self.mouse_up(key=key)
+                else:
+                    self.send_key_up(key)
+            except Exception as e:
+                logger.debug(f'release_held_inputs {kind} {key} failed {e}')
+        if held:
+            logger.info(f'released held inputs {held}')
+        return held
+
+    def check_perform_watch(self):
+        """原生角色单次上场超过硬上限就抛 CharPerformTimeout, 由 BaseChar.perform 松键并切人。
+
+        大招/变奏演出里不抛(演出本身会结束, 时停也已从计时里扣掉)。
+        """
+        watch = self.perform_watch
+        if not watch or self.in_liberation or not self._in_combat:
+            return
+        char, start, limit = watch
+        elapsed = self.time_elapsed_accounting_for_freeze(start)
+        if elapsed > limit:
+            self.perform_watch = None
+            raise CharPerformTimeout(f'{char} on field {elapsed:.1f}s > {limit:.0f}s')
+
+    def next_frame(self):
+        # in_combat() 里会吞掉所有异常, 判战斗状态的过程中不抛, 交给下一次 sleep_check/check_combat
+        if not getattr(self, 'in_sleep_check', False):
+            self.check_perform_watch()
+        return super().next_frame()
+
     def check_combat(self):
         """检查当前是否处于战斗状态, 如果不是则抛出异常。"""
+        self.check_perform_watch()
         if self.skip_combat_check:
             return
         if self._in_combat and not self.in_combat():

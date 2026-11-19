@@ -28,7 +28,7 @@ class Luhesi(BaseChar):
 
     def perform_everything(self):
         self.continues_normal_attack(1.1)
-        if not self.has_sub_dps_intro:
+        if not self.burst_intro():
             self.send_resonance_key(post_sleep=0.1)
             return
         else:

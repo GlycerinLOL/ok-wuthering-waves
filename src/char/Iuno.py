@@ -38,10 +38,11 @@ class Iuno(BaseChar):
         while self.time_elapsed_accounting_for_freeze(start) < time_out:
             cycle_start = time.time()
             heavy_success = False
+            heavy_start = time.time()
+            # 特殊重击图标一直在(读错/被打断)最多重击 4 秒
             while self.time_elapsed_accounting_for_freeze(
-                    self.last_heavy) > 20 and self.task.find_feature("iuno_heavy",
-                                                                     box="box_extra_action",
-                                                                     threshold=0.6):
+                    self.last_heavy) > 20 and time.time() - heavy_start < 4 and self.task.find_feature(
+                "iuno_heavy", box="box_extra_action", threshold=0.6):
                 # 特殊重击可用
                 self.sleep(0.05)
                 self.heavy_attack()
@@ -59,7 +60,9 @@ class Iuno(BaseChar):
                     return True
             if not jumped and self.task.find_feature("iuno_jump", box="box_extra_action", threshold=0.6):
                 # 可以跳 起跳
-                while self.task.find_feature("iuno_jump", box="box_extra_action", threshold=0.6):
+                jump_start = time.time()
+                while (self.task.find_feature("iuno_jump", box="box_extra_action", threshold=0.6)
+                       and time.time() - jump_start < 2):
                     self.task.jump(after_sleep=0.1)
                 time_out += 3
                 jumped = True

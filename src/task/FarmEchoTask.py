@@ -5,6 +5,7 @@ import time
 import numpy as np
 
 from ok import Logger, TaskDisabledException, color_range_to_bound
+from src.task import BossBook
 from src.task.BaseCombatTask import BaseCombatTask, CharRevivedException, white_color
 from src.task.WWOneTimeTask import WWOneTimeTask
 from ok import find_boxes_by_name
@@ -15,14 +16,18 @@ logger = Logger.get_logger(__name__)
 
 class FarmEchoTask(WWOneTimeTask, BaseCombatTask):
     owns_switch_healer_config = True
+    # 传送模式 → (按名字选的配置项, 旧版按序号选的配置项)
+    TELEPORT_KEYS = {
+        'Weekly Challenge': ('Weekly Boss Name', 'Which Weekly Boss to Teleport'),
+        'Boss Challenge': ('Boss Challenge Name', 'Which Boss Challenge to Teleport'),
+        'Special Nightmare': ('Special Nightmare Name', 'Which Special Nightmare to Teleport'),
+    }
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.description = "Click Start after Entering Dungeon or Teleporting to The Boss"
         self.name = "🌀 Farm 4C Echo in Dungeon/World"
         self.icon = task_icon('boss')
-        self.group_name = 'Daily Activities'
-        self.group_icon = task_icon('category-daily')
         self.default_config.update({
             'Teleport to Boss': 'No',
             'Boss Level': "80",
@@ -32,6 +37,10 @@ class FarmEchoTask(WWOneTimeTask, BaseCombatTask):
             'Echo Pickup Method': 'Walk',
             'Use Liberation': True,
             'Switch to Healer before and after Combat': True,
+            'Weekly Boss Name': '',
+            'Boss Challenge Name': '',
+            'Special Nightmare Name': '',
+            # 旧版按序号选；界面上不再显示，只在名字为空时换算成名字
             'Which Weekly Boss to Teleport': 1,
             'Which Boss Challenge to Teleport': 1,
             'Which Special Nightmare to Teleport': 1,
@@ -43,31 +52,28 @@ class FarmEchoTask(WWOneTimeTask, BaseCombatTask):
             'Combat Wait Time': 'Wait time before each combat (seconds), overrides Boss profile if set',
             'Use Liberation': 'Do not use Liberation to Save Time',
             'Switch to Healer before and after Combat': 'Better Chance to Keep Character Alive',
-            'Which Weekly Boss to Teleport': 'From Top to Bottom, Starting with 1',
-            'Which Boss Challenge to Teleport': 'From Top to Bottom, Starting with 1',
-            'Which Special Nightmare to Teleport': 'From Top to Bottom, Starting with 1',
+            'Weekly Boss Name': 'Found by name in the list, new bosses appear here after one run',
+            'Boss Challenge Name': 'Found by name in the list, new bosses appear here after one run',
+            'Special Nightmare Name': 'Found by name in the list, new bosses appear here after one run',
         })
         self.find_echo_method = ['Yolo', 'Run in Circle', 'Walk']
         self.config_type['Teleport to Boss'] = {'type': "drop_down",
                                                 'options': ['No', 'Weekly Challenge',
                                                             'Boss Challenge', 'Special Nightmare'],
                                                 'sub_configs': {
-                                                    'Weekly Challenge': ['Which Weekly Boss to Teleport', 'Boss Level'],
-                                                    'Boss Challenge': ['Which Boss Challenge to Teleport',
-                                                                       'Boss Level'],
-                                                    'Special Nightmare': ['Which Special Nightmare to Teleport',
-                                                                          'Boss Level'],
+                                                    'Weekly Challenge': ['Weekly Boss Name', 'Boss Level'],
+                                                    'Boss Challenge': ['Boss Challenge Name', 'Boss Level'],
+                                                    'Special Nightmare': ['Special Nightmare Name', 'Boss Level'],
                                                 }}
+        for mode, (name_key, _) in self.TELEPORT_KEYS.items():
+            self.config_type[name_key] = {'type': 'drop_down',
+                                          'options': BossBook.known_options(BossBook.CATEGORY_OF_MODE[mode])}
         self.config_type['Boss Level'] = {'type': "drop_down", 'options': ['50', '60', '70', '80', '90'], }
         self.config_type['Echo Pickup Method'] = {'type': "drop_down", 'options': self.find_echo_method}
         self.boss_list = ['Other', 'Hyvatia', 'Fallacy of No Return', 'Sentry Construct', 'Lorelei', 'Lioness of Glory',
                           'Nightmare: Hecate', 'Fenrico', 'Nameless Explorer']
         self.config_type['Boss'] = {'type': "drop_down", 'options': self.boss_list}
         self.combat_end_condition = self.find_echos
-        self.total_weekly_number = 9
-        self.total_boss_number = 20
-        # F2 Nightmare Purification list: nightmare nests, then special nightmares
-        self.nightmare_structure = [5, 10]
         self.add_exit_after_config()
         self._has_treasure = False
         self._in_realm = False
@@ -266,6 +272,8 @@ class FarmEchoTask(WWOneTimeTask, BaseCombatTask):
                 self._just_entered_boss_realm = True
             else:
                 walk_result = self.walk_after_boss_teleport()
+        except TaskDisabledException:
+            raise  # 手动停任务不是传送失败，别再走领月卡等补救
         except Exception as e:
             raise RuntimeError(self.tr('Teleport to boss failed')) from e
 
@@ -282,41 +290,58 @@ class FarmEchoTask(WWOneTimeTask, BaseCombatTask):
         self.init_parameters()
         self.log_info(self.tr('teleport_to_boss prepared as {walk_result}').format(walk_result=walk_result))
 
+    def on_create(self):
+        super().on_create()
+        self.migrate_teleport_index_to_name()
+
+    def migrate_teleport_index_to_name(self):
+        """旧配置只有「第几个」：按游戏里从上往下的顺序换成名字（旧代码第 9 个以后会点歪，这里按本意换算）。
+        已经存了名字的换成下拉框里的写法（周本以前存纯副本名，现在是「Boss（副本名）」）。"""
+        for mode, (name_key, index_key) in self.TELEPORT_KEYS.items():
+            category = BossBook.CATEGORY_OF_MODE[mode]
+            value = self.config.get(name_key)
+            if value:
+                option = BossBook.to_option(category, value)
+                if option != value:
+                    self.config[name_key] = option
+                    logger.info(f'migrate {name_key}={value} -> {option}')
+                continue
+            names = BossBook.known_options(category)
+            index = self.config.get(index_key, 1)
+            if isinstance(index, int) and 1 <= index <= len(names):
+                self.config[name_key] = names[index - 1]
+                logger.info(f'migrate {index_key}={index} -> {name_key}={names[index - 1]}')
+
     def teleport_to_configured_boss(self):
         teleport_to_boss = self.config.get('Teleport to Boss', 'No')
-        self.ensure_main(time_out=180)
-        structure = None
-        if teleport_to_boss == 'Weekly Challenge':
-            feature = 'zhange'
-            serial_number = self.config.get('Which Weekly Boss to Teleport', 1)
-            total_number = self.total_weekly_number
-        elif teleport_to_boss == 'Boss Challenge':
-            feature = 'qiangdi'
-            serial_number = self.config.get('Which Boss Challenge to Teleport', 1)
-            total_number = self.total_boss_number
-        elif teleport_to_boss == 'Special Nightmare':
-            feature = 'mengyan'
-            serial_number = self.config.get('Which Special Nightmare to Teleport', 1)
-            structure = self.nightmare_structure
-            total_number = sum(structure)
-        else:
+        if teleport_to_boss not in self.TELEPORT_KEYS:
             raise RuntimeError(self.tr('Unknown Teleport to Boss config: {teleport_to_boss}').format(teleport_to_boss=teleport_to_boss))
-
-        self.info_set('Teleport to Boss', f'{teleport_to_boss} {serial_number - 1}')
+        name_key, index_key = self.TELEPORT_KEYS[teleport_to_boss]
+        category = BossBook.CATEGORY_OF_MODE[teleport_to_boss]
+        label = self.config.get(name_key) or ''
+        target = BossBook.realm_of(label)
+        serial = self.config.get(index_key, 1)
+        by_name = self.game_lang == 'zh_CN'
+        if not by_name:
+            target = ''  # 名字表是中文的；外文客户端按旧的序号数（数法已修好，不再算错位）
+        self.ensure_main(time_out=180)
+        self.info_set('Teleport to Boss', f'{teleport_to_boss} {label if target else "#" + str(serial)}')
         self.openF2Book('gray_book_boss')
-        self.open_boss_book(feature)
-        # special nightmares are listed after the nightmare nests
-        book_serial = serial_number + sum(structure[:-1]) if structure else serial_number
-        is_team = self.click_on_book_target(book_serial, total_number, structure)
+        self.open_boss_book(category)
+        clicked = self.click_book_target_by_name(category, target, serial)
+        if by_name and not target:
+            # 名字为空（序号超出已知列表）时按序号点到的，记成名字，以后游戏加 Boss 也不会挪位
+            known = next((n for n in BossBook.known_names(category) if BossBook.same_name(clicked, n)), None)
+            self.config[name_key] = BossBook.option_label(category, known or BossBook.display_name(clicked))
+        is_team = self.wait_after_book_click()
         if is_team:
             if teleport_to_boss == 'Weekly Challenge':
                 self.click_configured_boss_level()
-                self.click_solo_challenge()
-            self.click_team_challenge()
+            self.click_challenge_until_in_world(time_out=120)
         else:
             self.realm_entry_at_heal_point = False  # 传送到 boss 附近再走进本, 退本不会回到信标
             self.wait_click_travel()
-        self.wait_in_team_and_world(time_out=120)
+            self.wait_in_team_and_world(time_out=120)
         self.sleep(2)
         return is_team
 
@@ -361,10 +386,7 @@ class FarmEchoTask(WWOneTimeTask, BaseCombatTask):
             raise RuntimeError(self.tr('Teleport to boss failed: can not find F before entering realm'))
         self.send_key('f', after_sleep=3)
         self.click_configured_boss_level()
-        self.sleep(1)
-        self.click_solo_challenge()
-        self.click(0.908, 0.919, after_sleep=5)
-        self.wait_in_team_and_world(time_out=120)
+        self.click_challenge_until_in_world(time_out=120)
         self._in_realm = True
         self.treat_as_not_in_realm = False
         self._has_treasure = False
@@ -382,12 +404,6 @@ class FarmEchoTask(WWOneTimeTask, BaseCombatTask):
         if not level_box:
             raise RuntimeError(self.tr('Can not find boss level {boss_level}').format(boss_level=boss_level))
         self.click_box(level_box)
-
-    def click_solo_challenge(self):
-        self.click(0.880, 0.911, after_sleep=2)
-        # 结晶波片(含备用)不足时, 进队伍界面前会弹「无法获取奖励, 是否继续进入」;
-        # 勾选本次登录不再提示并确认, 刷声骸不需要领奖励. 弹窗点击后立即出现, 不弹时只多等 1 秒
-        self.wait_click_skip_dialog_confirm(time_out=1)
 
     def handle_boss_restart_after_treasure(self):
         self._has_treasure = True

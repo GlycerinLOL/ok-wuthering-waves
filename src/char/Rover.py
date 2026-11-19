@@ -154,27 +154,66 @@ class Rover(BaseChar):
         self.click_echo(time_out=0)
         if self.is_forte_full():
             self.check_combat()
-            if self.resonance_available() and self.click_resonance()[0]:
+            if self.resonance_available() and self.click_resonance(time_out=1)[0]:
                 self.continues_normal_attack(1.4)
                 self.sleep(0.1)
         self.check_combat()
         if not self.click_liberation(send_click=True):
-            self.click_resonance()
+            self.click_resonance(time_out=1)
 
     def spectro_routine_aftertune_combo(self):
         self.heavy_attack()
         self.sleep(0.4)
         self.continues_normal_attack(0.7)
 
+    HAVOC_UMBRA_DURATION = 10.0
+    HAVOC_COMBO_TIME = 1.6
+
     def perform_havoc_routine(self):
+        """暗主: 暗流满长按普攻进暗涌(翅膀出来闪避取消), 暗涌里 5A→E→闪避 / 5A→闪避 / 5A→大招→声骸。
+        大招倍率高、吃暗涌的湮灭增伤, 平时留着; 太久没进暗涌(读不到暗流)就不留了。"""
         self.wait_down()
-        self.heavy_click_forte(check_fun = self.is_mouse_forte_full)
-        self.click_liberation(send_click=True)
-        if self.click_resonance(send_click=True)[0]:
+        if self.is_mouse_forte_full():
+            self.heavy_attack(0.6)
+            self.task.click(key='right')
+            self.sleep(0.1)
+            self.havoc_umbra_time = time.time()
+        if self.time_elapsed_accounting_for_freeze(getattr(self, 'havoc_umbra_time', -1)) < self.HAVOC_UMBRA_DURATION:
+            self.havoc_umbra_combo()
             return
-        if not self.click_echo():
-            self.click()
-        self.continues_normal_attack(1.1 - self.time_elapsed_accounting_for_freeze(self.last_switch_time))
+        # 攒暗流: E 出第一刀就涨, 闪避取消第二刀; 再打一套普攻
+        if self.resonance_available() and self.click_resonance(send_click=False, time_out=1)[0]:
+            self.task.click(key='right')
+            self.sleep(0.1)
+        self.attack_while(self.HAVOC_COMBO_TIME)
+        if self.is_mouse_forte_full():
+            self.heavy_attack(0.6)
+            self.task.click(key='right')
+            self.sleep(0.1)
+            self.havoc_umbra_time = time.time()
+            self.havoc_umbra_combo()
+            return
+        hold_from = getattr(self, 'havoc_umbra_time', -1)
+        if hold_from < 0:
+            hold_from = getattr(self, 'havoc_hold_from', -1)
+            if hold_from < 0:
+                hold_from = self.havoc_hold_from = time.time()
+        if self.time_elapsed_accounting_for_freeze(hold_from) > 25:
+            self.click_liberation(send_click=True)
+        self.click_echo(time_out=0)
+
+    def havoc_umbra_combo(self):
+        for i in range(3):
+            if self.time_elapsed_accounting_for_freeze(self.havoc_umbra_time) > self.HAVOC_UMBRA_DURATION:
+                break
+            self.attack_while(self.HAVOC_COMBO_TIME)
+            if i == 0 and self.resonance_available():
+                self.click_resonance(send_click=False, time_out=0.8)
+            elif i == 2 and self.click_liberation(send_click=True):
+                break
+            self.task.click(key='right')
+            self.sleep(0.1)
+        self.click_echo(time_out=0)
 
     def init_wind(self):
         from src.char.Cartethyia import Cartethyia
@@ -197,7 +236,7 @@ class Rover(BaseChar):
                 use_skyfall_severance = self.use_skyfall_severance
                 if flying:
                     self.wind_routine_click_while_flying(1.6 if use_skyfall_severance else 1.74)
-                if use_skyfall_severance and self.click_resonance(send_click=False)[0]:
+                if use_skyfall_severance and self.click_resonance(send_click=False, time_out=1)[0]:
                     self.wind_routine_click_while_flying(1)
         self.click_liberation(send_click=True)
         self.wind_routine_wait_down()
@@ -238,6 +277,6 @@ class Rover(BaseChar):
         self.wait_down()
         self.click_echo()
         liber = self.click_liberation(send_click=True)
-        res = self.click_resonance(send_click=True)[0]
+        res = self.click_resonance(send_click=True, time_out=1)[0]
         if not (liber or res):
             self.continues_normal_attack(1)

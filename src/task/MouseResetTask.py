@@ -16,6 +16,8 @@ class MouseResetTask(TriggerTask):
         self.icon = task_icon('settings')
         self.description = "Turn on if you mouse jumps around"
         self.mouse_pos = None
+        # coco-ww 任务页只放刷声骸和自动战斗; 这个照常工作(WWOneTimeTask 开跑时要用), 只是不占一张卡片
+        self.visible = False
 
     def enable(self):
         super().enable()

@@ -33,7 +33,7 @@ class Rebecca(BaseChar):
     def perform_combat(self):
         # 窗口内再次入场：没有有效连招，快速让位
         if self._in_reenter_window():
-            self.click_resonance()
+            self.click_resonance(time_out=1)
             self.continues_normal_attack(self.NORMAL_ATTACK_DURATION)
             return True
         # 标准连招：不依赖大招/协奏状态，固定执行
@@ -49,13 +49,13 @@ class Rebecca(BaseChar):
 
         if self.has_intro:
             self.task.wait_until(lambda: self.resonance_available(), 2)
-            self.click_resonance(post_sleep=1.5)
-            self.click_resonance(post_sleep=1.5)
+            self.click_resonance(post_sleep=1.5, time_out=1)
+            self.click_resonance(post_sleep=1.5, time_out=1)
         else:
             self.task.wait_until(lambda: self.resonance_available(), 2)
-            self.click_resonance(post_sleep=1.5)
-            self.click_resonance(post_sleep=1.5)
-            self.click_resonance(post_sleep=1)
+            self.click_resonance(post_sleep=1.5, time_out=1)
+            self.click_resonance(post_sleep=1.5, time_out=1)
+            self.click_resonance(post_sleep=1, time_out=1)
 
         # 末次 E 后能量未满：普攻攒能直到蓄力图标出现（最多 4s）
         self.send_resonance_key()
@@ -81,6 +81,10 @@ class Rebecca(BaseChar):
             self.heavy_attack(0.5)
 
     def perform_hmg_mode(self):
+        # 读到大招明确还在冷却就别空按 6 秒(读不到冷却照旧固定执行)
+        if not self.liberation_available() and self.task.get_cd('liberation') > 1:
+            self.logger.info('Rebecca liberation on cd, skip hmg mode')
+            return
         enter_start = time.time()
         while time.time() - enter_start < self.LIB_ENTER_DURATION:
             self.send_liberation_key()

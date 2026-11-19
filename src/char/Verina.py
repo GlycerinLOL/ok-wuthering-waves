@@ -49,7 +49,7 @@ class Verina(BaseChar):
     def cast_resonance(self):
         """共鸣(E)可用则放。"""
         if self.resonance_available():
-            self.click_resonance(send_click=True, time_out=0)
+            self.click_resonance(send_click=True, time_out=1)
 
     def cast_liberation(self):
         """解放(大招)可用则放。"""

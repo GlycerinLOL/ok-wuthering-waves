@@ -5,9 +5,11 @@ from src.char.BaseChar import BaseChar, SwitchPriority
 
 
 class Suisui(BaseChar):
+    """穗穗。普攻攒三段回路(芳菲信), 满了才放声骸+大招(不满不放), 再补到协奏满切人。
+    正常 A 到三段满约 4 秒; 读不到就按上限走, 别把一次上场拖过框架 30 秒硬上限。"""
     ATTACK_INTERVAL = 0.1
-    FORTE_TIMEOUT = 26.0
-    CONCERTO_TIMEOUT = 12.0
+    FORTE_TIMEOUT = 14.0
+    CONCERTO_TIMEOUT = 10.0
     FORTE3_SWITCH_LOCKOUT = 16.0
     MAIN_DPS_FORTE3_SWITCH_LOCKOUT = 32
 
@@ -32,7 +34,7 @@ class Suisui(BaseChar):
         if self.should_heavy:
             if self.has_intro:
                 self.heavy_attack(1.5)
-            self.click_resonance()
+            self.click_resonance(time_out=1)
             self.should_heavy = False
         while self.time_elapsed_accounting_for_freeze(start) < self.FORTE_TIMEOUT:
             if self.forte3_available():
@@ -89,7 +91,8 @@ class Suisui(BaseChar):
 
     def get_switch_priority(self, current_char=None, has_intro=False, target_low_con=False):
         since_last = self.time_elapsed_accounting_for_freeze(self.last_forte3_switch)
-        if since_last > 40:
+        # 还没满协奏切出过(-1)时 since_last=10000, 不能当成「太久没上场」, 否则开局一直抢 MUST
+        if self.last_forte3_switch > 0 and since_last > 40:
             return SwitchPriority.MUST
         elif since_last < self.FORTE3_SWITCH_LOCKOUT:
             return SwitchPriority.NO

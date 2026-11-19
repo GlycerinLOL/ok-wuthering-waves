@@ -4,6 +4,7 @@ from src.char.BaseChar import BaseChar
 
 
 class Galbrena(BaseChar):
+    ENHANCED_DODGE_INTERVAL = 2.6
 
     def do_perform(self):
         if self.has_intro:
@@ -26,9 +27,14 @@ class Galbrena(BaseChar):
         if self.check_res() and not self.need_fast_perform():
             self.click_liberation()
             start = time.time()
+            last_dodge = start
             while self.check_res() and time.time() - start < 10:
                 if self.flying():
                     self.shorekeeper_auto_dodge()
+                # 强化态: 强普2345 -> 闪避续内燃烧 -> 强普345; 闪避不重置连段
+                if time.time() - last_dodge > self.ENHANCED_DODGE_INTERVAL:
+                    self.continues_right_click(0.05)
+                    last_dodge = time.time()
                 self.click(after_sleep=0.1)
                 self.check_combat()
             return self.switch_next_char()

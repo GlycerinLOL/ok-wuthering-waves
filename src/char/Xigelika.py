@@ -24,7 +24,7 @@ class Xigelika(BaseChar):
     def perform_everything(self):
         start = time.time()
         time_out = 0.5
-        if self.has_sub_dps_intro:
+        if self.burst_intro():
             time_out = 15
         while self.time_elapsed_accounting_for_freeze(start) < time_out:
             self.click_echo(time_out=0)

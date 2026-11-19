@@ -8,13 +8,29 @@ class Qingxiao(BaseChar):
     HEAVY_TIMEOUT = 2
     # 图标连续"暗"满该时长才确认释放(去抖)
     HEAVY_CONFIRM = 0.25
+    # 这么久没打过整套(队友延奏凑不齐、协奏判漏、非标准队)就不等两个延奏了
+    BURST_FALLBACK = 30.0
 
     def __init__(self, *args, **kwargs):
+        self.last_burst_time = -1
         super().__init__(*args, **kwargs)
         self.must_cast_lib_this_turn = False
 
+    def burst_turn(self):
+        """标准队(清达莫)等两个队友延奏都挂着的变奏入场才打整套; 太久没打过就直接打。"""
+        if self.has_all_buff():
+            return True
+        since = max(self.last_burst_time, getattr(self.task, 'combat_start', 0) or 0)
+        if since <= 0:
+            return False
+        return self.time_elapsed_accounting_for_freeze(since) > self.BURST_FALLBACK
+
     def do_perform(self):
-        self.must_cast_lib_this_turn = self.has_all_buff() and self.has_intro
+        self.must_cast_lib_this_turn = self.burst_turn()
+        if self.must_cast_lib_this_turn:
+            if not self.has_all_buff():
+                self.logger.info(f'qingxiao: no full burst for {self.BURST_FALLBACK:.0f}s, burst without both outro buffs')
+            self.last_burst_time = time.time()
 
         if not self.must_cast_lib_this_turn:
             self.cast_enhanced_resonance()
