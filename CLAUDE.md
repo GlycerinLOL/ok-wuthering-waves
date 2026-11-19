@@ -70,6 +70,7 @@ Claude Code 不會自動載入 `.agents/skills/`，依任務手動讀對應 `SKI
   - 上游刪了 `src/gui/CharacterCodeTab.py` 或它 import 的模組（`CustomCharLoader` 等）→ merge 不會報衝突、會靜默刪除，測試會抓到；用 `git checkout ORIG_HEAD -- <檔案>` 拿回來再修相容性。
   - ok-script 拿掉 `custom_tabs` 支援 → 第三個測試失敗，需改用其他掛載方式，先回報使用者。
   - 上游 d0a59291（v3.8.5）整套移除自訂角色與無音清剿；fork 全數保留並自行維護：`CustomCharLoader.py`、`CharacterCodeTask.py`、`src/web/character_code/`、`TacetEliminationTask.py`、`CharFactory.apply_team_char_classes` 與 `BaseCombatTask` 內的呼叫、`config.py` 的 Tacet 任務項、i18n 對應條目。上游改到這些檔時要保留 fork 這側。
+  - 2026-11 併入 coco-ww（wk321425/coco-ww e199e23，AGPL）：`src/recorder/`、`src/combat/FKeyStart.py`/`AxisWatch.py`、`src/char/TeamVariants.py`、`src/task/BossBook.py`、`tools/char_fuzz.py`，以及 `BaseChar`/`BaseCombatTask`/`CombatCheck`/`BaseWWTask`/`FarmEchoTask`/約 40 個角色檔的改動，fork 自行維護（上游同步在這些熱檔會常衝突）。工坊改用 `wk321425/coco-ww-char-code`。`BaseWWTask` 刻意保留舊的 `click_on_book_target`/`click_team_challenge`（Forgery/Tacet/NightmareNest/Simulation 還在用）。coco 的中文 config key（`按 F 开始战斗` 等）是刻意的例外，隊伍代碼會讀，不要改成英文。
 - 功能開 branch（`feat/...`、`fix/...`），完成後 merge 回 master。
 - 降低衝突：優先新增檔案，少改熱檔（`BaseCombatTask.py`、`BaseWWTask.py`、`FarmEchoTask.py`、`CharFactory.py`、`BaseChar.py`）；`config.py` 任務清單只在尾端追加；不做順手格式化/重構。
 - 本檔用 `git add -f CLAUDE.md` 追蹤（上游 `.gitignore` 忽略它，同步不會衝突）。不要改上游 `.gitignore`；本機雜項（`.omc/`）放 `.git/info/exclude`。

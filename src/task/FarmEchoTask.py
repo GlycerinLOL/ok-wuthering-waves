@@ -327,6 +327,10 @@ class FarmEchoTask(WWOneTimeTask, BaseCombatTask):
         by_name = self.game_lang == 'zh_CN'
         if not by_name:
             target = ''  # 名字表是中文的；外文客户端按旧的序号数（数法已修好，不再算错位）
+            # fork: 序号设定已不在界面上, 用下拉框选中项在名字表里的位置当序号(名字表按游戏里从上往下排)
+            names = BossBook.known_options(category)
+            if label in names:
+                serial = names.index(label) + 1
         self.ensure_main(time_out=180)
         self.info_set('Teleport to Boss', f'{teleport_to_boss} {label if target else "#" + str(serial)}')
         self.openF2Book('gray_book_boss')

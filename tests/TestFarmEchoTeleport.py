@@ -53,6 +53,15 @@ class TestFarmEchoTeleport(unittest.TestCase):
         task.wait_click_travel.assert_called_once_with()
         task.wait_in_team_and_world.assert_called_once_with(time_out=120)
 
+    def test_non_chinese_client_uses_selected_name_position_as_serial(self):
+        name = BossBook.known_options('qiangdi')[4]
+        task = self.make_task({'Teleport to Boss': 'Boss Challenge', 'Boss Challenge Name': name,
+                               'Which Boss Challenge to Teleport': 1}, is_team=False, lang='zh_TW')
+
+        task.teleport_to_configured_boss()
+
+        task.click_book_target_by_name.assert_called_once_with('qiangdi', '', 5)
+
     def test_weekly_challenge_picks_level_then_enters(self):
         name = BossBook.known_options('zhange')[1]
         task = self.make_task({'Teleport to Boss': 'Weekly Challenge', 'Weekly Boss Name': name}, is_team=True)
