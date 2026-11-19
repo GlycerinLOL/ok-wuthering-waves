@@ -85,6 +85,7 @@ class TestAutoCombatTask(unittest.TestCase):
         self.task.in_team = Mock(return_value=(True, 0, 3))
         self.task.get_box_by_name = Mock()
         self.task.has_target = Mock(return_value=True)
+        self.task.config[self.task.F_START_KEY] = False  # fork: coco-ww F-start reads a real box
         self.task.find_one = Mock(return_value=None)
         # Simulate an obscured portrait: no match must not revive an old char.
         self.task.find_best_match_in_box = Mock(return_value=None)

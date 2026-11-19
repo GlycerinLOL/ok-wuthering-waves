@@ -160,8 +160,9 @@ class Zani(BaseChar):
         self.task.in_liberation = True
         send_key = True
         not_liber_box = self.task.box_of_screen_scaled(2560, 1440, 1909, 1274, 1957, 1322, name='zani_not_liber_box', hcenter=True)
+        overall = time.time()
         while not self.task.find_one('target_enemy_long_inner', box=not_liber_box, threshold=0.75):
-            if time.time() - start > 6:
+            if time.time() - start > 6 or time.time() - overall > 9:
                 self.task.in_liberation = False
                 if not self.check_liber():
                     self.update_blazes()
@@ -299,9 +300,12 @@ class Zani(BaseChar):
                 if (result := self.wait_forte_full(sleep)) != State.DONE:
                     return result
                 self.task.mouse_down()
-                if (result := self.wait_forte_full(0.6)) != State.DONE:
+                try:
+                    result = self.wait_forte_full(0.6)
+                finally:
+                    self.task.mouse_up()
+                if result != State.DONE:
                     return result
-                self.task.mouse_up()
                 wait_chair = 1.15
                 if (result := self.wait_forte_full(0.85, send_click=True)) != State.DONE:
                     return result

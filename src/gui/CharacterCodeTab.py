@@ -2,10 +2,11 @@ import difflib
 import json
 import re
 import tempfile
+import threading
 from datetime import datetime
 from pathlib import Path
 from urllib.error import HTTPError
-from urllib.parse import quote, urlparse
+from urllib.parse import quote
 from urllib.request import Request, urlopen
 
 from PySide6.QtCore import QPointF, Qt, QSize, QUrl, Signal
@@ -13,8 +14,8 @@ from PySide6.QtGui import (
     QColor, QDesktopServices, QFontMetricsF, QPainter, QPixmap, QTextCursor, QTextFormat, QTextLayout,
 )
 from PySide6.QtWidgets import (
-    QApplication, QFileDialog, QAbstractItemView, QHBoxLayout, QHeaderView, QLabel,
-    QLineEdit, QListWidget, QListWidgetItem, QPlainTextEdit, QSplitter, QStyle,
+    QApplication, QCheckBox, QFileDialog, QAbstractItemView, QGridLayout, QHBoxLayout, QHeaderView, QLabel,
+    QLineEdit, QListWidget, QListWidgetItem, QPlainTextEdit, QSizePolicy, QSplitter, QStyle,
     QStyledItemDelegate, QStyleOptionViewItem, QTableWidget, QTableWidgetItem, QTextEdit,
     QVBoxLayout, QWidget,
 )
@@ -32,19 +33,30 @@ from ok.ui.qt.widget.CustomTab import CustomTab
 from src.char.CharFactory import apply_team_char_classes, char_dict
 from src.char.CustomCharLoader import (
     TEAM_CODE_MODE_BUILTIN, TEAM_CODE_MODE_IMPORT, TEAM_CODE_STATE_NONE,
-    changed_import_members, create_custom_team, delete_custom_team, drifted_team_members,
-    export_custom_team, get_english_char_name,
+    changed_import_members, create_custom_team, team_runs_custom_code, delete_custom_team, drifted_team_members,
+    export_custom_team, get_custom_team_folder, get_english_char_name,
     import_custom_team, inspect_team_archive, list_custom_teams, normalize_custom_teams,
     normalize_team, read_builtin_char_code, read_team_char_code, read_team_manifest,
     save_team_code_as_import, switch_all_teams_code_mode, switch_team_code_mode, team_code_state,
 )
+from src.char.TeamVariants import (
+    activate_variant, add_variant_from_archive, delete_variant, forget_active,
+    import_archive_as_active, list_variants,
+)
 
-BASE_CHAR_URL = "https://raw.githubusercontent.com/ok-oldking/ok-wuthering-waves/refs/heads/master/src/char/BaseChar.py"
-UPLOAD_TEAM_URL = "https://github.com/ok-oldking/ok-ww-char-code"
-WORKSHOP_TEAMS_ALL_URL = "https://okwwcharcode.ok-script.com/teams.json"
-WORKSHOP_TEAM_URL = "https://okwwcharcode.ok-script.com/teams/{slug}.json"
-WORKSHOP_ARCHIVE_HOSTS = {"okwwcharcode.ok-script.com", "raw.githubusercontent.com"}
-WORKSHOP_USER_AGENT = "ok-wuthering-waves"
+# coco-ww 的工坊就是这个 GitHub 仓库: codes/ 放队伍 zip, teams.json 是仓库里的 Actions 生成的索引。
+WORKSHOP_REPO = "wk321425/coco-ww-char-code"
+WORKSHOP_BRANCH = "main"
+UPLOAD_TEAM_URL = f"https://github.com/{WORKSHOP_REPO}"
+# 同一份仓库内容的几个入口, 按顺序试。第一个是 GitHub 自己的, 内容最新(几分钟内), 国内常连不上;
+# 后面的 jsDelivr 是尽力而为的备用: 国内能连, 但分支内容最长缓存 12 小时, 它自己回源失败时也会报 404/503。
+WORKSHOP_BASE_URLS = (
+    f"https://raw.githubusercontent.com/{WORKSHOP_REPO}/{WORKSHOP_BRANCH}/",
+    f"https://cdn.jsdelivr.net/gh/{WORKSHOP_REPO}@{WORKSHOP_BRANCH}/",
+    f"https://fastly.jsdelivr.net/gh/{WORKSHOP_REPO}@{WORKSHOP_BRANCH}/",
+)
+WORKSHOP_TIMEOUT = 8
+WORKSHOP_USER_AGENT = "coco-ww"
 logger = Logger.get_logger(__name__)
 
 # The team list marks each team with a haloed dot, and both switch buttons wear the
@@ -63,7 +75,8 @@ TEAM_CODE_STATE_ROLE = Qt.UserRole + 1
 
 
 def _state_colors(state):
-    return TEAM_CODE_STATE_COLORS[TEAM_CODE_MODE_IMPORT if state == TEAM_CODE_MODE_IMPORT else TEAM_CODE_MODE_BUILTIN]
+    custom = state in (TEAM_CODE_MODE_IMPORT, "custom")
+    return TEAM_CODE_STATE_COLORS[TEAM_CODE_MODE_IMPORT if custom else TEAM_CODE_MODE_BUILTIN]
 
 
 def team_state_color(state):
@@ -126,7 +139,22 @@ class TeamListDelegate(QStyledItemDelegate):
         painter.restore()
 
 
+TEAM_DOT_CUSTOM = "custom"
+
+
+def team_dot_state(team, state):
+    """圆点按实际在跑的代码画: 导入的、或者直接写在队伍目录里和内置不一样的, 都算自定义(蓝);
+    只有真在跑内置代码才红。state 仍是 team_code_state 的结果, 切换按钮照旧只认它。"""
+    if state == TEAM_CODE_MODE_IMPORT:
+        return state
+    if state == TEAM_CODE_MODE_BUILTIN:
+        return state
+    return TEAM_DOT_CUSTOM if team_runs_custom_code(team) else TEAM_CODE_MODE_BUILTIN
+
+
 def team_state_tooltip(state):
+    if state == TEAM_DOT_CUSTOM:
+        return "自定义代码生效中（直接写在队伍目录里，没有导入副本）"
     if state == TEAM_CODE_MODE_IMPORT:
         return translate_ui("Imported code is in effect")
     if state == TEAM_CODE_MODE_BUILTIN:
@@ -148,7 +176,7 @@ def translate_ui(message):
         if translated and translated != message:
             return translated
 
-    # Fallback dictionaries for all officially supported locales in ok-ww:
+    # Fallback dictionaries for all officially supported locales in coco-ww:
     # zh_CN (Simplified Chinese), zh_TW (Traditional Chinese), ja_JP (Japanese), ko_KR (Korean), es_ES (Spanish)
     _locale_fallbacks = {
         "zh_CN": {
@@ -451,6 +479,54 @@ class TranslatedDialog(Dialog):
         return value_widget
 
 
+# 队伍里三个人的显示顺序: 主C -> 副C -> 辅助, 和游戏里配队的习惯一致。
+# 定位取框架给每个角色登记的类型; 漂泊者登记的是主C, 但实际配队里都是打辅助位的(风主、雷主), 排到副C一档。
+ROLE_RANK = {"MainDps": 0, "SubDps": 1, "Healer": 2}
+# 框架的三档不够细, 这里补两处:
+# - 漂泊者登记的是主C, 实际配队里是风主/雷主这种辅助位, 排在真正的副C后面
+# - 登记成 Healer 的角色里, 纯治疗/纯拐排最后, 坎特蕾拉、千咲、卜灵、布兰特这类带输出的排在它们前面
+ROLE_RANK_OVERRIDES = {
+    "Rover": 1.5,
+    **{name: 2.5 for name in (
+        "ShoreKeeper", "Verina", "Mornye", "Suisui", "Baizhi", "Youhu", "Lily", "Jianxin", "Taoqi")},
+}
+
+
+def _char_roles():
+    """{类名: 排序档位}, 同时认英文显示名(工坊索引里写的是显示名)。"""
+    roles = {}
+    for info in char_dict.values():
+        class_name = info["cls"].__name__
+        rank = ROLE_RANK_OVERRIDES.get(class_name)
+        if rank is None:
+            rank = ROLE_RANK.get(str(getattr(info.get("char_type"), "value", "")), 3)
+        roles[class_name.casefold()] = rank
+        roles[get_english_char_name(class_name).casefold()] = rank
+    return roles
+
+
+def team_display_order(names, team=None):
+    """把三个角色排成 主C、副C、辅助。
+
+    同一档里有两个人时(双主C、双辅助), 本地队伍看谁的代码文件大: 整条轴都写在持宏者那份里,
+    持宏者排前面; 分不出来或者是工坊里的条目, 就按名字排, 保证每次顺序一样。"""
+    roles = _char_roles()
+    sizes = {}
+    if team is not None:
+        try:
+            folder = get_custom_team_folder(team)
+            for name in names:
+                path = folder / f"{name}.py"
+                sizes[name] = path.stat().st_size if path.is_file() else 0
+        except (OSError, ValueError):
+            sizes = {}
+    return sorted(names, key=lambda name: (
+        roles.get(str(name).strip().casefold(), 3),
+        -sizes.get(name, 0),
+        get_english_char_name(str(name).strip()).casefold(),
+    ))
+
+
 def workshop_team_slug(team):
     names = sorted((
         re.sub(r"[^A-Za-z0-9-]+", "_", get_english_char_name(name)).strip("_")
@@ -459,22 +535,39 @@ def workshop_team_slug(team):
     return "_".join(names)
 
 
-def workshop_team_url(team):
-    return WORKSHOP_TEAM_URL.format(slug=quote(workshop_team_slug(team), safe="_-"))
+def fetch_workshop_file(path, max_bytes):
+    """从工坊仓库取一个文件(path 相对仓库根), 几个入口挨个试; 仓库里没有这个文件返回 None。"""
+    last_error = None
+    quoted = quote(path, safe="/_-.")
+    for index, base in enumerate(WORKSHOP_BASE_URLS):
+        url = base + quoted
+        logger.info(f"char code workshop request: {url}")
+        try:
+            with urlopen(Request(url, headers={"User-Agent": WORKSHOP_USER_AGENT}),
+                         timeout=WORKSHOP_TIMEOUT) as response:
+                content = response.read(max_bytes + 1)
+        except HTTPError as error:
+            # 只有 GitHub 自己说 404 才算仓库里没这个文件; 备用入口的 404 多半是它回源失败
+            if error.code == 404 and index == 0:
+                return None
+            logger.warning(f"char code workshop {base} failed: {error}")
+            last_error = error
+            continue
+        except OSError as error:
+            # 连不上、超时、证书问题: 换下一个入口
+            logger.warning(f"char code workshop {base} failed: {error}")
+            last_error = error
+            continue
+        if len(content) > max_bytes:
+            raise ValueError(translate_ui("Workshop response is too large."))
+        return content
+    raise ValueError(f"工坊连不上({last_error})。GitHub 和 jsDelivr 都试过了, 检查网络或开代理后再试。")
 
 
 def fetch_all_workshop_teams():
-    url = WORKSHOP_TEAMS_ALL_URL
-    logger.info(f"char code workshop all teams request: {url}")
-    try:
-        with urlopen(Request(url, headers={"User-Agent": WORKSHOP_USER_AGENT}), timeout=15) as response:
-            content = response.read(5_000_001)
-    except HTTPError as error:
-        if error.code == 404:
-            return []
-        raise
-    if len(content) > 5_000_000:
-        raise ValueError(translate_ui("Workshop response is too large."))
+    content = fetch_workshop_file("teams.json", 5_000_000)
+    if content is None:
+        return []
     try:
         payload = json.loads(content.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as error:
@@ -504,17 +597,9 @@ def fetch_all_workshop_teams():
 
 def fetch_workshop_codes(team):
     expected_members = sorted((get_english_char_name(name) for name in normalize_team(team)), key=str.casefold)
-    url = workshop_team_url(team)
-    logger.info(f"char code workshop request: {url}")
-    try:
-        with urlopen(Request(url, headers={"User-Agent": WORKSHOP_USER_AGENT}), timeout=15) as response:
-            content = response.read(2_000_001)
-    except HTTPError as error:
-        if error.code == 404:
-            return []
-        raise
-    if len(content) > 2_000_000:
-        raise ValueError(translate_ui("Workshop response is too large."))
+    content = fetch_workshop_file(f"teams/{workshop_team_slug(team)}.json", 2_000_000)
+    if content is None:
+        return []
     try:
         payload = json.loads(content.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as error:
@@ -526,6 +611,35 @@ def fetch_workshop_codes(team):
         raise ValueError(translate_ui("Workshop returned a different team."))
     codes = [code for code in payload["codes"] if isinstance(code, dict)]
     return sorted(codes, key=lambda code: int(code.get("timestamp") or 0), reverse=True)
+
+
+def workshop_code_members(code):
+    """工坊索引里一条代码的队伍成员(英文显示名, 小写排序), 用来和本地队伍对上号。"""
+    members = code.get("members")
+    if not isinstance(members, list) or not members:
+        members = str(code.get("team") or "").split(",")
+    return sorted(str(member).strip().casefold() for member in members if str(member).strip())
+
+
+def team_workshop_members(team):
+    return sorted(get_english_char_name(name).casefold() for name in normalize_team(team))
+
+
+def download_workshop_archive(code):
+    """下载索引里一条代码的 zip 并拆开校验, 返回 inspect_team_archive 的结果。只做联网和解析, 可以放后台线程。
+
+    只认索引里的文件名, 一律从工坊仓库的 codes/ 下载; 索引里写的下载地址不用,
+    这样索引是旧的、或者是从别的仓库抄来的, 也不会被带去别的站点下载。"""
+    filename = Path(str(code.get("filename") or "")).name
+    if not filename.lower().endswith(".zip"):
+        raise ValueError(translate_ui("Workshop download URL is invalid."))
+    content = fetch_workshop_file(f"codes/{filename}", 20_000_000)
+    if content is None:
+        raise ValueError(f"工坊里找不到 {filename}, 可能刚被删掉或改名, 关掉工坊重新打开再试。")
+    with tempfile.TemporaryDirectory() as temp_dir:
+        archive_path = Path(temp_dir) / filename
+        archive_path.write_bytes(content)
+        return inspect_team_archive(archive_path)
 
 
 def format_workshop_local_time(code, date_only=False):
@@ -661,10 +775,13 @@ class TeamInfoDialog(TranslatedDialog):
 class WorkshopDialog(TranslatedDialog):
     import_requested = Signal(object)
 
-    def __init__(self, codes, team_name=None, parent=None):
+    def __init__(self, codes, team_name=None, parent=None, team=None):
         super().__init__(parent)
         self.all_codes = list(codes)
         self.filtered_codes = list(codes)
+        # 页签里选中的队伍: 工坊里有这支队伍的代码时默认只看它, 不用每次再搜
+        self.team_members = team_workshop_members(team) if team else None
+        self.team_only_check = None
         self.panel.setFixedWidth(1100)
         self.panel.setMinimumHeight(560)
         if team_name:
@@ -703,6 +820,13 @@ class WorkshopDialog(TranslatedDialog):
         self.count_label = QLabel("", self.panel)
 
         filter_layout.addWidget(self.search_edit, 1)
+        if self.team_members:
+            same_team = sum(workshop_code_members(code) == self.team_members for code in self.all_codes)
+            self.team_only_check = QCheckBox(f"只看当前队伍({same_team})", self.panel)
+            self.team_only_check.setChecked(same_team > 0)
+            self.team_only_check.setEnabled(same_team > 0)
+            self.team_only_check.toggled.connect(self._apply_filter)
+            filter_layout.addWidget(self.team_only_check)
         filter_layout.addWidget(QLabel(self.tr("Character:"), self.panel))
         filter_layout.addWidget(self.char_filter_combo)
         filter_layout.addWidget(self.count_label)
@@ -748,11 +872,13 @@ class WorkshopDialog(TranslatedDialog):
     def _team_display_text(self, code):
         members = code.get("members")
         if members and isinstance(members, list):
-            names = [self.tr(get_english_char_name(m.strip())) for m in members if m.strip()]
+            names = [self.tr(get_english_char_name(m))
+                     for m in team_display_order([m.strip() for m in members if m.strip()])]
             return ", ".join(names)
         raw_team = code.get("team", "")
         if raw_team:
-            names = [self.tr(get_english_char_name(m.strip())) for m in raw_team.split(",") if m.strip()]
+            names = [self.tr(get_english_char_name(m))
+                     for m in team_display_order([m.strip() for m in raw_team.split(",") if m.strip()])]
             return ", ".join(names)
         return ""
 
@@ -760,8 +886,12 @@ class WorkshopDialog(TranslatedDialog):
         query = self.search_edit.text().strip().lower()
         selected_char = self.char_filter_combo.currentData()
 
+        team_only = self.team_only_check is not None and self.team_only_check.isChecked()
+
         matched = []
         for code in self.all_codes:
+            if team_only and workshop_code_members(code) != self.team_members:
+                continue
             if selected_char:
                 members = [str(m).casefold() for m in code.get("members", [])]
                 if selected_char.casefold() not in members:
@@ -856,12 +986,41 @@ class WorkshopDialog(TranslatedDialog):
                 self.import_requested.emit(code)
 
 
+class VariantDeleteDialog(TranslatedDialog):
+    """挑要删的存档。生效中的那份不在列表里。"""
+
+    def __init__(self, variants, parent=None):
+        super().__init__(parent)
+        self.panel.setFixedWidth(520)
+        self.set_dialog_title("删除存档")
+        self.body.addWidget(QLabel("勾选要删掉的存档(生效中的那份不在这里, 删了不能恢复):", self.panel))
+        self.list_widget = QListWidget(self.panel)
+        self.list_widget.setMinimumHeight(220)
+        for variant in variants:
+            item = QListWidgetItem(variant["label"])
+            item.setData(Qt.UserRole, variant["id"])
+            item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
+            item.setCheckState(Qt.Unchecked)
+            item.setToolTip(str(variant["manifest"].get("description") or ""))
+            self.list_widget.addItem(item)
+        self.body.addWidget(self.list_widget)
+        self.ok_button.setText("删除勾选的")
+
+    def selected_ids(self):
+        items = (self.list_widget.item(row) for row in range(self.list_widget.count()))
+        return [item.data(Qt.UserRole) for item in items if item.checkState() == Qt.Checked]
+
+
 class CharacterCodeTab(CustomTab):
     current_team_loaded = Signal(object)
+    # 后台线程干完活, 把(回调, 结果, 异常)交回界面线程
+    background_done = Signal(object, object, object)
 
     def __init__(self):
         super().__init__()
         self.current_team_loaded.connect(self._on_current_team_loaded)
+        self.background_done.connect(self._on_background_done)
+        self.workshop_busy = False
         self.characters = self._unique_characters()
         self.char_by_name = {char_cls.__name__: char_cls for char_cls in self.characters}
         self.current_team = None
@@ -895,37 +1054,44 @@ class CharacterCodeTab(CustomTab):
             translate_ui("Switch every team between imported and built in code"))
         self.switch_all_button.clicked.connect(self._switch_all_code_mode)
         left_layout.addWidget(self.switch_all_button)
-        team_buttons = QVBoxLayout()
-        first_team_button_row = QHBoxLayout()
+        # 六个按钮排成 3 行 2 列的等宽格子, 宽度跟着左栏走
+        team_buttons = QGridLayout()
+        team_buttons.setColumnStretch(0, 1)
+        team_buttons.setColumnStretch(1, 1)
         self.create_team_button = Button(self.tr("Create Team"), icon="plus", variant="primary")
         self.create_team_button.clicked.connect(self._create_team)
         self.delete_team_button = Button(self.tr("Delete Team"), icon="trash")
         self.delete_team_button.clicked.connect(self._delete_team)
         self.workshop_button = Button(self.tr("Workshop"), icon="layers")
         self.workshop_button.clicked.connect(self._open_workshop)
-        first_team_button_row.addWidget(self.create_team_button)
-        first_team_button_row.addWidget(self.delete_team_button)
-        second_team_button_row = QHBoxLayout()
         self.import_team_button = Button(self.tr("Import Team"), icon="download")
         self.import_team_button.clicked.connect(self._import_team)
         self.export_team_button = Button(self.tr("Export Selected"), icon="export")
         self.export_team_button.clicked.connect(self._export_team)
-        second_team_button_row.addWidget(self.workshop_button)
-        second_team_button_row.addWidget(self.import_team_button)
-        third_team_button_row = QHBoxLayout()
         self.upload_team_button = Button(self.tr("Upload Team"), icon="github")
         self.upload_team_button.clicked.connect(self._open_upload_team)
-        third_team_button_row.addWidget(self.export_team_button)
-        third_team_button_row.addWidget(self.upload_team_button)
+        grid_buttons = (
+            self.create_team_button, self.delete_team_button,
+            self.workshop_button, self.import_team_button,
+            self.export_team_button, self.upload_team_button,
+        )
+        for index, button in enumerate(grid_buttons):
+            # 宽度不看各自的字数, 只按格子平分, 六个才会一样大
+            button.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
+            team_buttons.addWidget(button, 1 + index // 2, index % 2)
+        # 左栏至少留出两个最宽按钮的位置, 字不会被截
+        # 这时候主题样式还没套上, 量出来的宽度比实际显示的(粗体字、内边距)小, 每个再留 12 的余量
+        widest = max(button.sizeHint().width() for button in grid_buttons) + 12
+        buttons_width = 2 * widest + max(team_buttons.horizontalSpacing(), 6)
+        self.team_list.setMinimumWidth(max(210, buttons_width))
+        self.team_list.setMaximumWidth(max(300, buttons_width))
+        self.switch_all_button.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
         self.export_current_button = None
         if (getattr(og, "app", None) and getattr(og.app, "config", {}).get("debug", False)
                 and (Path.cwd() / ".git").is_dir()):
             self.export_current_button = Button(self.tr("Export Current"), icon="export")
             self.export_current_button.clicked.connect(self._export_current_team)
-            team_buttons.addWidget(self.export_current_button)
-        team_buttons.addLayout(first_team_button_row)
-        team_buttons.addLayout(second_team_button_row)
-        team_buttons.addLayout(third_team_button_row)
+            team_buttons.addWidget(self.export_current_button, 0, 0, 1, 2)
         left_layout.addLayout(team_buttons)
 
         right = QWidget(splitter)
@@ -936,19 +1102,37 @@ class CharacterCodeTab(CustomTab):
         self.char_image_label.setFixedSize(52, 52)
         self.char_image_label.setAlignment(Qt.AlignCenter)
         self.member_combo = ComboBox(parent=right)
-        self.member_combo.setMinimumWidth(190)
+        # 窗口缩到最小时这一行也要放得下: 两个下拉都允许被压窄, 不按内容撑宽
+        self.member_combo.setSizeAdjustPolicy(ComboBox.AdjustToMinimumContentsLengthWithIcon)
+        self.member_combo.setMinimumContentsLength(4)
+        self.member_combo.setMinimumWidth(120)
+        self.member_combo.setMaximumWidth(200)
         self.member_combo.currentIndexChanged.connect(self._member_selected)
         self.team_info_button = Button(self.tr("Team Info"), icon="info")
         self.team_info_button.clicked.connect(self._show_team_info)
         self.team_info_button.hide()
-        self.ask_ai_button = Button(self.tr("Ask AI"), icon="chat")
-        self.ask_ai_button.clicked.connect(self._copy_ask_ai_template)
         top.addWidget(self.char_image_label)
-        top.addWidget(QLabel(self.tr("Character Code")))
         top.addWidget(self.member_combo)
-        top.addStretch(1)
+        # 同一支队伍的多份代码: 下拉里选哪份就换成哪份, 当前那份自动收回存档库
+        # 顶栏从左到右: 选角色 / 选存档(占掉剩余宽度) / 删存档 / 拉取 / 队伍说明, 右边缘和下面的保存按钮对齐
+        self.variant_combo = ComboBox(parent=right)
+        # 存档名很长, 不能让它把整行撑出窗口: 宽度跟着窗口走, 放不下就截断, 全名看悬停提示
+        self.variant_combo.setSizeAdjustPolicy(ComboBox.AdjustToMinimumContentsLengthWithIcon)
+        self.variant_combo.setMinimumContentsLength(4)
+        self.variant_combo.setMinimumWidth(110)
+        self.variant_combo.setToolTip("这支队伍存着的几份代码, 选一份立刻换过去; 现在这份会自动存起来, 随时能换回")
+        self.variant_combo.currentIndexChanged.connect(self._variant_selected)
+        self.fetch_variants_button = Button("拉取同队", icon="download")
+        self.fetch_variants_button.setToolTip("把工坊里这支队伍的所有代码一次下到存档里, 之后在左边的下拉里直接换")
+        self.fetch_variants_button.clicked.connect(self._fetch_team_variants)
+        self.delete_variant_button = Button("", icon="trash")
+        self.delete_variant_button.setToolTip("删除不要的存档")
+        self.delete_variant_button.clicked.connect(self._delete_variants)
+        top.addWidget(QLabel("存档"))
+        top.addWidget(self.variant_combo, 1)
+        top.addWidget(self.delete_variant_button)
+        top.addWidget(self.fetch_variants_button)
         top.addWidget(self.team_info_button)
-        top.addWidget(self.ask_ai_button)
         right_layout.addLayout(top)
 
         self.editor = CodeEditor(right)
@@ -964,6 +1148,8 @@ class CharacterCodeTab(CustomTab):
 
         bottom = QHBoxLayout()
         self.status_label = QLabel("")
+        # 状态文字再长也不能把保存按钮挤出窗口
+        self.status_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         self.reset_button = Button(self.tr("Reset to Built In"), icon="refresh")
         self.reset_button.clicked.connect(self._switch_code_mode)
         self.save_button = Button(self.tr("Save"), icon="check", variant="primary")
@@ -1014,11 +1200,11 @@ class CharacterCodeTab(CustomTab):
         self.team_list.clear()
         selected_row = -1
         for row, team in enumerate(teams):
-            display_team = sorted(team, key=lambda name: get_english_char_name(name).casefold())
+            display_team = team_display_order(team, team)
             label = ", ".join(self.tr(get_english_char_name(name)) for name in display_team)
             item = QListWidgetItem(label)
             item.setData(Qt.UserRole, list(team))
-            self._mark_team_state(item, states[team])
+            self._mark_team_state(item, team_dot_state(team, states[team]))
             self.team_list.addItem(item)
             if team == selected_team:
                 selected_row = row
@@ -1033,6 +1219,7 @@ class CharacterCodeTab(CustomTab):
             self.member_combo.clear()
             self._set_editor_enabled(False)
             self._update_team_info_button()
+            self._refresh_variants()
         self._update_switch_all_button(states)
         self._update_code_mode_button()
 
@@ -1054,7 +1241,7 @@ class CharacterCodeTab(CustomTab):
         if row >= 0:
             item = self.team_list.item(row)
             if item is not None:
-                self._mark_team_state(item, states[team])
+                self._mark_team_state(item, team_dot_state(team, states[team]))
         self._update_switch_all_button(states)
 
     def _team_selected(self, row):
@@ -1075,12 +1262,149 @@ class CharacterCodeTab(CustomTab):
         self.current_team_row = row
         self.member_combo.blockSignals(True)
         self.member_combo.clear()
-        for class_name in self.current_team:
+        for class_name in team_display_order(self.current_team, self.current_team):
             self.member_combo.addItem(self.tr(get_english_char_name(class_name)), userData=class_name)
         self.member_combo.setCurrentIndex(member_index)
         self.member_combo.blockSignals(False)
         self._set_editor_enabled(True)
         self._member_selected(member_index)
+        self._refresh_variants()
+
+    def _refresh_variants(self):
+        """重填存档下拉; 第一项永远是生效中的那份。"""
+        variants = []
+        if self.current_team is not None:
+            try:
+                variants = list_variants(self.current_team)
+            except Exception as e:
+                self.logger.error(f"list team variants failed: {e}")
+        self.variant_combo.blockSignals(True)
+        self.variant_combo.clear()
+        for variant in variants:
+            self.variant_combo.addItem(variant["label"], userData=variant["id"])
+        self.variant_combo.setCurrentIndex(0 if variants else -1)
+        self.variant_combo.blockSignals(False)
+        self.variant_combo.setToolTip(
+            (f"现在生效: {variants[0]['label']}\n" if variants else "")
+            + "这支队伍存着的几份代码, 选一份立刻换过去; 现在这份会自动存起来, 随时能换回")
+        has_team = self.current_team is not None
+        self.variant_combo.setEnabled(has_team and len(variants) > 1)
+        self.fetch_variants_button.setEnabled(has_team and not self.workshop_busy)
+        self.delete_variant_button.setEnabled(len(variants) > 1)
+
+    def _variant_selected(self, index):
+        if index <= 0 or self.current_team is None:
+            return
+        team = self.current_team
+        variant_id = self.variant_combo.itemData(index)
+        label = self.variant_combo.itemText(index)
+        if not self._guard_unsaved_changes():
+            self._refresh_variants()
+            return
+        try:
+            activate_variant(team, variant_id)
+        except Exception as e:
+            self.logger.error(f"switch team variant failed: {e}")
+            show_info_bar(self.window(), str(e), title=self.tr("Error"), error=True)
+            self._refresh_variants()
+            return
+        self._refresh_team_list(team)
+        reloaded = self._reload_live_team_code(team)
+        message = f"已换成「{label}」, 原来那份已存进存档。"
+        if reloaded:
+            message += "当前队伍已重新加载。"
+        show_info_bar(self.window(), message, title=self.tr("Success"))
+
+    def _delete_variants(self):
+        if self.current_team is None:
+            return
+        team = self.current_team
+        stored = [variant for variant in list_variants(team) if not variant["active"]]
+        if not stored:
+            return
+        dialog = VariantDeleteDialog(stored, self.window())
+        if not dialog.exec():
+            return
+        deleted = 0
+        try:
+            for variant_id in dialog.selected_ids():
+                delete_variant(team, variant_id)
+                deleted += 1
+        except Exception as e:
+            show_info_bar(self.window(), str(e), title=self.tr("Error"), error=True)
+        self._refresh_variants()
+        if deleted:
+            show_info_bar(self.window(), f"删掉了 {deleted} 份存档。", title=self.tr("Success"))
+
+    def _run_in_background(self, work, done):
+        """联网的活放后台线程, 界面不卡; done(结果, 异常) 回到界面线程执行。"""
+        def runner():
+            try:
+                result, error = work(), None
+            except Exception as e:
+                result, error = None, e
+            self.background_done.emit(done, result, error)
+
+        threading.Thread(target=runner, name="char_code_workshop", daemon=True).start()
+
+    @staticmethod
+    def _on_background_done(done, result, error):
+        done(result, error)
+
+    def _set_workshop_busy(self, busy):
+        self.workshop_busy = busy
+        self.workshop_button.setEnabled(not busy)
+        self.workshop_button.setText("连接中…" if busy else self.tr("Workshop"))
+        self.fetch_variants_button.setEnabled(not busy and self.current_team is not None)
+        self.fetch_variants_button.setText("下载中…" if busy else "拉取同队")
+
+    def _fetch_team_variants(self):
+        if self.current_team is None or self.workshop_busy:
+            return
+        team = self.current_team
+        members = team_workshop_members(team)
+
+        def work():
+            codes = [code for code in fetch_all_workshop_teams() if workshop_code_members(code) == members]
+            infos, failed = [], []
+            for code in codes:
+                try:
+                    info = download_workshop_archive(code)
+                    if normalize_team(info["team"]) != team:
+                        raise ValueError("压缩包里不是这支队伍")
+                    infos.append(info)
+                except Exception as e:
+                    logger.warning(f"fetch workshop variant {code.get('filename')} failed: {e}")
+                    failed.append(str(code.get("filename") or code.get("name") or "?"))
+            return infos, failed
+
+        def done(result, error):
+            self._set_workshop_busy(False)
+            if error is not None:
+                show_info_bar(self.window(), str(error), title=self.tr("Workshop Error"), error=True)
+                return
+            infos, failed = result
+            added = 0
+            for info in infos:
+                try:
+                    added += bool(add_variant_from_archive(info)[1])
+                except Exception as e:
+                    self.logger.error(f"store workshop variant failed: {e}")
+                    failed.append(str(info["manifest"].get("name") or "?"))
+            if team == self.current_team:
+                self._refresh_variants()
+            if not infos and not failed:
+                show_info_bar(self.window(), "工坊里还没有这支队伍的代码。", title="存档")
+                return
+            message = f"工坊里这支队伍有 {len(infos) + len(failed)} 份代码: 新存了 {added} 份, 已有 {len(infos) - added} 份。"
+            if failed:
+                message += f" {len(failed)} 份没下成: {', '.join(failed[:3])}"
+            else:
+                message += "在「存档」下拉里选一份就能换。"
+            show_info_bar(self.window(), message, title="存档", error=bool(failed) and not added)
+
+        self._set_workshop_busy(True)
+        self._run_in_background(work, done)
 
     def _update_team_info_button(self):
         """The author's description belongs to the imported code, so it hides while built in code
@@ -1114,10 +1438,10 @@ class CharacterCodeTab(CustomTab):
     def _set_editor_enabled(self, enabled):
         self.editor.setReadOnly(not enabled)
         for widget in (self.member_combo, self.delete_team_button,
-                       self.export_team_button, self.ask_ai_button, self.reset_button, self.save_button):
+                       self.export_team_button, self.reset_button, self.save_button):
             widget.setEnabled(enabled)
         # Workshop button should always remain enabled to allow browsing & importing any team
-        self.workshop_button.setEnabled(True)
+        self.workshop_button.setEnabled(not self.workshop_busy)
         if not enabled:
             self.loading_editor = True
             self.editor.clear()
@@ -1182,7 +1506,7 @@ class CharacterCodeTab(CustomTab):
         if self.current_team is None:
             return
         team = self.current_team
-        display_team = sorted(team, key=lambda name: get_english_char_name(name).casefold())
+        display_team = team_display_order(team, team)
         team_name = ", ".join(self.tr(get_english_char_name(name)) for name in display_team)
         box = confirmation_dialog(
             self.tr("Delete Team"),
@@ -1193,6 +1517,7 @@ class CharacterCodeTab(CustomTab):
             return
         try:
             delete_custom_team(team)
+            forget_active(team)
             self._reload_live_team_code(team)
             self.current_team = None
             self.current_char_cls = None
@@ -1546,34 +1871,38 @@ class CharacterCodeTab(CustomTab):
 
     def _open_workshop(self):
         # An import selects the imported team, so ask before anything is downloaded.
-        if not self._guard_unsaved_changes():
+        if self.workshop_busy or not self._guard_unsaved_changes():
             return
-        try:
-            codes = fetch_all_workshop_teams()
-        except Exception as e:
-            show_info_bar(self.window(), str(e), title=self.tr("Workshop Error"), error=True)
-            return
-        dialog = WorkshopDialog(codes, parent=self.window())
-        dialog.import_requested.connect(lambda code: self._import_workshop_code(code, dialog))
-        dialog.exec()
+
+        def done(codes, error):
+            self._set_workshop_busy(False)
+            if error is not None:
+                show_info_bar(self.window(), str(error), title=self.tr("Workshop Error"), error=True)
+                return
+            dialog = WorkshopDialog(codes, parent=self.window(), team=self.current_team)
+            dialog.import_requested.connect(lambda code: self._import_workshop_code(code, dialog))
+            dialog.exec()
+
+        # 拉索引要联网(最坏每个入口等 8 秒), 放后台, 拉到了再开对话框
+        self._set_workshop_busy(True)
+        self._run_in_background(fetch_all_workshop_teams, done)
 
     def _import_workshop_code(self, code, parent):
-        url = code.get("downloadUrl") or code.get("rawUrl")
-        parsed = urlparse(str(url or ""))
-        if parsed.scheme != "https" or parsed.hostname not in WORKSHOP_ARCHIVE_HOSTS:
-            show_info_bar(parent, self.tr("Workshop download URL is invalid."), title=self.tr("Error"), error=True)
+        if self.workshop_busy:
             return
-        try:
-            with urlopen(Request(url, headers={"User-Agent": WORKSHOP_USER_AGENT}), timeout=30) as response:
-                content = response.read(20_000_001)
-            if len(content) > 20_000_000:
-                raise ValueError(self.tr("Workshop archive is too large."))
-            with tempfile.TemporaryDirectory() as temp_dir:
-                archive_path = Path(temp_dir) / Path(str(code.get("filename") or "team.zip")).name
-                archive_path.write_bytes(content)
-                self._preview_and_import_archive(archive_path, expected_team=None)
-        except Exception as e:
-            show_info_bar(parent, str(e), title=self.tr("Workshop Error"), error=True)
+
+        def done(info, error):
+            self._set_workshop_busy(False)
+            parent.setEnabled(True)
+            if error is not None:
+                show_info_bar(parent, str(error), title=self.tr("Workshop Error"), error=True)
+                return
+            self._confirm_and_import(info)
+
+        # 下载也放后台; 等的时候把工坊对话框置灰, 免得连点
+        self._set_workshop_busy(True)
+        parent.setEnabled(False)
+        self._run_in_background(lambda: download_workshop_archive(code), done)
 
     def _preview_and_import_archive(self, archive_path, expected_team=None):
         try:
@@ -1586,6 +1915,9 @@ class CharacterCodeTab(CustomTab):
             box.cancel_button.hide()
             box.exec()
             return False
+        return self._confirm_and_import(info)
+
+    def _confirm_and_import(self, info):
         translated_team = ", ".join(
             self.tr(name.strip()) for name in info["manifest"]["team"].split(",")
         )
@@ -1593,12 +1925,15 @@ class CharacterCodeTab(CustomTab):
         if not dialog.exec():
             return False
         try:
-            import_custom_team(info)
+            # 队伍原来的代码不覆盖, 收进存档库, 之后能在「存档」下拉里换回来
+            _variant_id, stashed = import_archive_as_active(info)
             self._refresh_team_list(info["team"])
             reloaded = self._reload_live_team_code(info["team"])
             message = self.tr("Team imported.")
             if reloaded:
                 message = self.tr("Team imported and reloaded for the matching team.")
+            if stashed:
+                message += " 原来那份已存进存档, 可在「存档」下拉里换回。"
             show_info_bar(self.window(), message, title=self.tr("Success"))
             return True
         except Exception as e:
@@ -1647,13 +1982,6 @@ class CharacterCodeTab(CustomTab):
                 selections.append(selection)
         self.editor.setExtraSelections(selections)
 
-    def _copy_ask_ai_template(self):
-        if self.current_char_cls is None:
-            return
-        class_name = self.current_char_cls.__name__
-        template = f'''```python\n{self.editor.toPlainText()}\n```\n\n{self.tr("I want to implement:")}\n\n{self.tr("Please modify the full {class_name} character automation code above.").format(class_name=class_name)}\n\n{self.tr("Return only the complete modified Python code for the whole file, not a patch and not an explanation.")}\n{self.tr("Keep the class name as {class_name}. Preserve imports that are still needed.").format(class_name=class_name)}\n\n{self.tr("Use this BaseChar reference while reasoning about helper methods, task APIs, state, switching, cooldowns, and combat flow:")}\n{BASE_CHAR_URL}\n'''
-        QApplication.clipboard().setText(template)
-        show_info_bar(self.window(), self.tr("Ask AI template copied. Paste it into an AI chatbot."), title=self.tr("Copied"))
 
     def _open_upload_team(self):
         QDesktopServices.openUrl(QUrl(UPLOAD_TEAM_URL))
@@ -1662,9 +1990,31 @@ class CharacterCodeTab(CustomTab):
         self.char_image_label.clear()
         if not self.show_char_feature_image:
             return
-        pixmap = self._get_char_feature_image(self.char_label_by_cls.get(self.current_char_cls))
+        pixmap = self._get_char_head_image(self.current_char_cls)
+        if pixmap is None:
+            pixmap = self._get_char_feature_image(self.char_label_by_cls.get(self.current_char_cls))
         if pixmap is not None and not pixmap.isNull():
             self.char_image_label.setPixmap(pixmap)
+
+    def _get_char_head_image(self, char_cls):
+        """游戏内的角色头像 assets/char_heads/<类名>.png; 没有这张图就返回 None, 退回模板截图。"""
+        name = getattr(char_cls, "__name__", char_cls)
+        if not name:
+            return None
+        key = ("head", str(name))
+        if key in self.char_feature_images:
+            return self.char_feature_images[key]
+        image = None
+        path = Path("assets") / "char_heads" / f"{name}.png"
+        if path.exists():
+            source = QPixmap(str(path))
+            if not source.isNull():
+                ratio = self.devicePixelRatioF()
+                side = round(52 * ratio)
+                image = source.scaled(side, side, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                image.setDevicePixelRatio(ratio)
+        self.char_feature_images[key] = image
+        return image
 
     def _load_char_feature_index(self):
         feature_index = {}

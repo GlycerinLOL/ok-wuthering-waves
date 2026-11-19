@@ -124,7 +124,10 @@ class Changli(BaseChar):
                     self.record_liberation_use()
                 last_click = now
             if time.time() - start > timeout:
-                self.task.raise_not_in_combat('too long clicking a liberation')
+                # 图标亮着却放不出来(被控/空中): 放弃这次, 别判脱战
+                self.logger.error('liberation still available after clicking, give up')
+                self._liberation_available = False
+                return False
             self.task.next_frame()
         if clicked:
             if self.task.wait_until(lambda: not self.task.in_team()[0], time_out=0.4):

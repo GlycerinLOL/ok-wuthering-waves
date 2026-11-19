@@ -5,6 +5,7 @@ from src.char.BaseChar import BaseChar, SwitchPriority
 
 
 class Denia(BaseChar):
+    AFTER_LIB1_DURATION = 6.0
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -40,16 +41,10 @@ class Denia(BaseChar):
                         self.click_echo(time_out=0)
                         return self.switch_next_char()
                     else:
+                        # 一段大招进紫妮后留在场上: 强化E(第二段点普攻也能出) -> 四段普攻攒满共形能量 -> 二段大招
                         self.lib_1_casted = True
-                        # for i in range(12):
-                        #     self.click(after_sleep=0.1)
-                        # self.task.send_key('space')
-                        # for i in range(12):
-                        #     self.click(after_sleep=0.1)
-                        # self.click_resonance()
-                        # self.click(after_sleep=0.1)
-                        self.continues_normal_attack(1.9)
-                        return self.switch_next_char()
+                        start = time.time()
+                        duration = self.AFTER_LIB1_DURATION
                 pass
             else:
                 self.click()
@@ -65,8 +60,12 @@ class Denia(BaseChar):
     def get_switch_priority(self, current_char=None, has_intro=False, target_low_con=False):
         if has_intro:
             from src.char.Aemeath import Aemeath
+            from src.char.Chisa import Chisa
             from src.char.Qingxiao import Qingxiao
 
+            if isinstance(current_char, Chisa) and not self.has_buff():
+                # 爱达千标准轴: 千咲变奏 -> 达妮娅 -> 变奏爱弥斯(吃两人延奏) -> 千咲
+                return SwitchPriority.HIGH
             if isinstance(current_char, (Aemeath, Qingxiao)) and not self.has_buff():
                 return SwitchPriority.NORMAL
             return SwitchPriority.NO + 1

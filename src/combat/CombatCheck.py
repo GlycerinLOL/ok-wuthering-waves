@@ -7,10 +7,11 @@ import numpy as np
 import win32api
 
 from ok import find_boxes_by_name, Logger, calculate_color_percentage, TaskDisabledException
-from ok import find_color_rectangles, get_mask_in_color_range, is_pure_black
+from ok import color_range_to_bound, find_color_rectangles, get_mask_in_color_range, is_pure_black
 from src import text_white_color
 from src.Labels import Labels
 from src.char.Roccia import Roccia
+from src.combat.FKeyStart import GRACE_LOG_INTERVAL, GRACE_TARGET_INTERVAL
 from src.task.BaseWWTask import BaseWWTask
 
 logger = Logger.get_logger(__name__)
@@ -25,8 +26,22 @@ CLOUD_RETARGET_INTERVAL = 0.8
 # 串流血条的渐变/压缩会让同一条血条仅约 60% 像素落在颜色范围内。
 CLOUD_HEALTH_BAR_FILL = 0.6
 
+# 结束条件(刷4C=画面里有声骸)要隔这么久再成立一次才算打完
+END_CONFIRM_SECONDS = 0.3
+# 残血 Boss 血条尖头怎样算还有血(占屏高/屏宽). 血条高 2K 13 像素 / 1K 9 像素(约 19/2160);
+# 剩 1% 血时尖头 2K 8x13 面积 62 / 1K 5x9 面积 25, 门槛取高过半条、面积过 高x3/3840 屏宽
+BOSS_SLIVER_MIN_HEIGHT = 9 / 2160
+BOSS_SLIVER_MAX_HEIGHT = 40 / 2160
+BOSS_SLIVER_MIN_WIDTH = 3 / 3840
+
 
 class CombatCheck(BaseWWTask):
+    # 第一次看到结束条件的时刻, <=0 表示没在确认
+    _end_seen_since = 0.0
+    # fork: class defaults so tasks built without __init__ (tests, team code) don't crash
+    _f_grace_since = -1.0
+    _f_grace_log = 0.0
+    _in_combat = False
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -55,6 +70,9 @@ class CombatCheck(BaseWWTask):
         }
         self.esc_count = 0
         self.can_break = False
+        # 按 F 开战后到第一次锁到目标之前的保护期起点, <=0 表示不在保护期
+        self._f_grace_since = -1.0
+        self._f_grace_log = 0.0
 
     @property
     def in_liberation(self):
@@ -91,6 +109,8 @@ class CombatCheck(BaseWWTask):
         self.last_in_realm_not_combat = 0
         self.has_lavitator = False
         self.can_break = False
+        self._f_grace_since = -1.0
+        self._end_seen_since = 0.0
         self.scene.set_not_in_combat()
         return False
 
@@ -152,7 +172,41 @@ class CombatCheck(BaseWWTask):
     def is_boss(self):
         return self.find_one('boss_break_shield') or self.find_one('boss_break_lock')
 
+    def should_start_combat_by_key(self):
+        """按过物理 F 且等够了时间就直接进战斗。只有自动战斗任务用, 见 AutoCombatTask。"""
+        return False
+
+    def start_combat_by_key(self):
+        return False
+
+    def f_grace_limit_seconds(self):
+        """保护期最多撑多久, 0 = 一直撑到锁到目标。"""
+        return 0.0
+
+    def f_grace_hold(self):
+        """按 F 开打后怪还没出来: 只补点一下中键就放行, 不卡那 3 秒找怪, 也不判脱战, 宏照常出招。
+
+        撑过上限就退出保护期, 回到原规则(找 3 秒怪, 找不到算脱战)。
+        """
+        since = self._f_grace_since
+        if not self._in_combat or since <= 0:
+            return False
+        held = time.time() - since
+        limit = self.f_grace_limit_seconds()
+        if limit > 0 and held >= limit:
+            self._f_grace_since = -1.0
+            self.log_info(f'F 开始战斗: {limit:.0f} 秒还没锁到目标, 按原规则找怪')
+            return False
+        self.middle_click(interval=GRACE_TARGET_INTERVAL)
+        now = time.time()
+        if now - self._f_grace_log >= GRACE_LOG_INTERVAL:
+            self._f_grace_log = now
+            self.log_info(f'F 开始战斗: 还没锁到目标, 不判脱战({held:.0f}s)')
+        return True
+
     def do_check_in_combat(self, target):
+        if not self._in_combat and self.should_start_combat_by_key():
+            return self.start_combat_by_key()
         if self.in_liberation:
             return True
         if self._in_combat:
@@ -167,15 +221,29 @@ class CombatCheck(BaseWWTask):
                 return self.reset_to_false(reason='on_combat_check failed')
             if self.has_target():
                 self.last_in_realm_not_combat = 0
+                self._end_seen_since = 0.0
                 return self.scene.set_in_combat()
             has_health = self.check_health_bar()
             if self.is_browser() and self.cloud_health_bar_grace(has_health):
                 # 云游戏: 未锁定但敌人血条仍在(或刚消失不久)即视为战斗中,
                 # 且要先于结束条件判断, 避免技能特效/血条闪烁让声骸识别误判战斗结束
                 self.last_in_realm_not_combat = 0
+                self._end_seen_since = 0.0
                 return self.scene.set_in_combat()
-            if self.combat_end_condition is not None and self.combat_end_condition():
-                return self.reset_to_false(reason='end condition reached')
+            # Boss 还在(残血也算)就没打完, 只是一时没锁住(跳开/演出), 不能凭画面里有声骸收手
+            if (self.combat_end_condition is not None and not self.boss_still_alive()
+                    and self.combat_end_condition()):
+                # 一帧看到「声骸」不算: 识别会误报, 而 Boss 没死时收手要空站好几秒才接上。
+                # 隔一次判定再看到才收手, 中间照常出招
+                now = time.time()
+                if self._end_seen_since <= 0:
+                    self._end_seen_since = now
+                    self.log_info('end condition seen, confirm on next check')
+                    return self.scene.set_in_combat()
+                if now - self._end_seen_since >= END_CONFIRM_SECONDS:
+                    return self.reset_to_false(reason='end condition reached')
+                return self.scene.set_in_combat()
+            self._end_seen_since = 0.0
             retarget_timeout = 30 if has_health else self.target_enemy_time_out
             if self.target_enemy(wait=True, time_out=retarget_timeout, check_health=has_health):
                 logger.debug(f'retarget enemy succeeded')
@@ -287,6 +355,13 @@ class CombatCheck(BaseWWTask):
         return False
 
     def has_target(self, double_check=False):
+        got = self.find_target(double_check)
+        if got:
+            # 锁到目标, 按 F 开战的保护期到此结束
+            self._f_grace_since = -1.0
+        return got
+
+    def find_target(self, double_check=False):
         if self.is_browser():
             return self.cloud_has_target()
         threshold = 0.6
@@ -359,6 +434,8 @@ class CombatCheck(BaseWWTask):
         else:
             if self.target_visible():
                 return True
+            elif self.f_grace_hold():
+                return True
             else:
                 timeout = self.target_enemy_time_out if time_out is None else time_out
                 logger.info(f'target lost try retarget {timeout}')
@@ -380,38 +457,62 @@ class CombatCheck(BaseWWTask):
                             health_lost_start = None
                 return False
 
-    def has_health_bar(self):
-        if self._in_combat:
-            min_height = self.height_of_screen(9 / 2160)
-            max_height = min_height * 3
-            min_width = self.width_of_screen(12 / 3840)
-        else:
-            min_height = self.height_of_screen(9 / 2160)
-            max_height = min_height * 3
-            min_width = self.width_of_screen(100 / 3840)
+    def _health_bar_min_size(self):
+        min_height = self.height_of_screen(9 / 2160)
+        min_width = self.width_of_screen((12 if self._in_combat else 100) / 3840)
+        return min_width, min_height
 
+    def has_health_bar(self):
+        min_width, min_height = self._health_bar_min_size()
         browser = self.is_browser()
         boxes = find_color_rectangles(self.frame, enemy_health_color_red, min_width, min_height,
-                                       max_height=max_height, threshold=CLOUD_HEALTH_BAR_FILL if browser else 0.95)
+                                      max_height=min_height * 3, threshold=CLOUD_HEALTH_BAR_FILL if browser else 0.95)
         if browser:
             # 放宽颜色填充后仍要求横向条形, 排除伤害数字和零散红色特效。
             boxes = [box for box in boxes if box.width >= box.height * 3]
-
         if len(boxes) > 0:
             self.draw_boxes('enemy_health_bar_red', boxes, color='blue')
             return True
-        else:
-            # 云游戏视频压缩会让少量血条像素偏离颜色范围, 放宽填充比例
-            boxes = find_color_rectangles(self.frame, boss_health_color, min_width, min_height * 1.3,
-                                          box=self.box_of_screen(1269 / 3840, 58 / 2160, 2533 / 3840, 200 / 2160,
-                                                                 hcenter=True, vcenter=True),
-                                          threshold=0.85 if self.is_browser() else 0.95)
-            if len(boxes) == 1:
-                self.boss_health_box = boxes[0]
-                self.boss_health_box.width = 10
-                self.boss_health_box.x += 6
-                self.boss_health = self.boss_health_box.crop_frame(self.frame)
-                self.draw_boxes('boss_health', boxes, color='blue')
+        return self.has_boss_health_bar()
+
+    def boss_health_area(self):
+        return self.box_of_screen(1269 / 3840, 58 / 2160, 2533 / 3840, 200 / 2160, hcenter=True, vcenter=True)
+
+    def has_boss_health_bar(self):
+        """屏幕顶上 Boss 血条还有血(只看血的颜色, Boss 死后空槽和名字残留不算)。"""
+        min_width, min_height = self._health_bar_min_size()
+        # 云游戏视频压缩会让少量血条像素偏离颜色范围, 放宽填充比例
+        boxes = find_color_rectangles(self.frame, boss_health_color, min_width, min_height * 1.3,
+                                      box=self.boss_health_area(), threshold=0.85 if self.is_browser() else 0.95)
+        if len(boxes) == 1:
+            self.boss_health_box = boxes[0]
+            self.boss_health_box.width = 10
+            self.boss_health_box.x += 6
+            self.boss_health = self.boss_health_box.crop_frame(self.frame)
+            self.draw_boxes('boss_health', boxes, color='blue')
+            return True
+        return False
+
+    def boss_still_alive(self):
+        """收手前问一句 Boss 还在不在: 破韧图标还挂着, 或者顶上血条还剩一点血色。
+
+        has_boss_health_bar 要求血色块占满外接框 95%, 可血条左端是尖头, 残血时只剩尖头那一截,
+        实机截图量过: 剩 7~8% 以下 2K/1K 都认不到。这里按连通块算, 只要高度够半条血条、面积够,
+        尖头也算(2K/1K 都能认到 1% 血)。只在要收手时看一次。
+        """
+        if self.is_boss():
+            return True
+        area = self.boss_health_area()
+        crop = self.frame[area.y:area.y + area.height, area.x:area.x + area.width, :3]
+        lower, upper = color_range_to_bound(boss_health_color)
+        mask = cv2.inRange(crop, lower, upper)
+        count, _, stats, _ = cv2.connectedComponentsWithStats(mask)
+        min_h = self.height_of_screen(BOSS_SLIVER_MIN_HEIGHT)
+        max_h = self.height_of_screen(BOSS_SLIVER_MAX_HEIGHT)
+        min_area = min_h * self.width_of_screen(BOSS_SLIVER_MIN_WIDTH)
+        for i in range(1, count):
+            h, a = stats[i, cv2.CC_STAT_HEIGHT], stats[i, cv2.CC_STAT_AREA]
+            if min_h <= h <= max_h and a >= min_area:
                 return True
         return False
 

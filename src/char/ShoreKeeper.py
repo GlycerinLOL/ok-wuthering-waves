@@ -4,6 +4,14 @@ from src.char.BaseChar import BaseChar, SwitchPriority
 
 
 class ShoreKeeper(BaseChar):
+    """守岸人(治疗, 大招区域给全队暴击/暴伤)。
+
+    机制: 普攻一套 4 段正好攒满 5 格能量, 满了重击「演绎」把敌人周围的坍缩核立刻变成蝴蝶;
+    不满时长按普攻会变蝴蝶飞(跑图用), 所以没满别长按。E 回血 + 5 只蝴蝶。
+    大招区域被变奏入场触发两次升级(暴击→暴伤), 后面的人要在区域里打。
+    """
+    FIELD_TIME_OUT = 6.0
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.outrotime = -1
@@ -44,8 +52,16 @@ class ShoreKeeper(BaseChar):
                 self.task.skip_combat_check = False
         self.click_echo(time_out=0)
         self.click_liberation()
-        if not self.click_resonance():
-            self.heavy_click_forte(self.is_mouse_forte_full)
+        if self.resonance_available():
+            self.click_resonance(time_out=1)
+        # 一套 4 段普攻正好攒满 5 格, 满了重击把坍缩核变成蝴蝶; 协奏没满就再来一轮
+        for _ in range(2):
+            if self.is_con_full() or self.field_time() > self.FIELD_TIME_OUT:
+                break
+            if not self.is_mouse_forte_full():
+                self.attack_while(1.6, stop=lambda: self.is_mouse_forte_full() or self.is_con_full())
+            if self.is_mouse_forte_full():
+                self.heavy_click_forte(self.is_mouse_forte_full)
         self.switch_next_char()
 
     def switch_next_char(self, *args, **kwargs):

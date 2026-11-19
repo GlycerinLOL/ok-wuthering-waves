@@ -4,152 +4,170 @@ from src.char.BaseChar import BaseChar, SwitchPriority
 
 
 class Lucilla(BaseChar):
-    """Lucilla 自动战斗: 回路充能型 + 大招变身型角色。
+    """洛瑟菈(拍照攒相片, 大招进「追忆」)。
 
-    机制: 长按 E 或蓄力重击各攒 1 格回路能量, 攒满 3 格大招可用; 放大招后变身进入特殊形态
-    (技能栏/大招图标消失, 视觉信号全失效), 固定时长输出后变回原建模, 再切人。
+    机制(帧表 + 攻略视频 + 绯洛穗录屏):
+    - 长按 E / 普攻第 3 段展开聚焦环, 判定分三段: 长判1 松手=成功, 长判2 松手=失败, 长判3 松手或按到底=成功。
+      成功是「追光/可圈可点」(+50 印象 = 1 张相片, E 追光另给 +20 协奏), 失败是「补光/乏善可陈」(+25)。
+      录屏量过第一个金色窗口在按下后 0.86~1.10 秒, 但 E 起手一被前一个动作缓存就整个往后挪, 定时松手很容易落进长判2。
+      攻略作者的用法是「按住不动等它跑满, 自动打出强化版」: E 按到底(帧表 92F+起手延迟)、A3 按到底(86F)都必定成功。
+    - 追光的印象在追光第 54F 才到账, 这之前切人会打断、能量不涨。
+    - 变奏入场直接给 2 张相片(+100), 再一发追光就能开大。没变奏就 E + A1A2 长按 A3 慢慢攒。
+    - 大招演出约 4.5 秒(隐藏 HUD), 然后进「追忆」: E/R 都放不了, 按住普攻依次打溯念留形 1/2/3 段,
+      第 3 段一直按着持续消耗相片, 松手或打完自动「断舍离」(+20 协奏, 期间不能切人, 隐藏 HUD ~1.4 秒), 然后退出追忆。
+      中途松手会少打相片, 所以要一直按住到断舍离。
     """
-    HOLD_TIME: float = 1.4
-    LIBERATION_ANIMATION_TIME: float = 3.0
-    LIBERATION_HEAVY_TIME: float = 15.0
-    HEAVY_PULSE_TIME: float = 0.6
-    CHARGE_TIME_OUT: float = 7.2
+    FOCUS_HOLD_TIME: float = 2.0
+    R_AFTER_FOCUS: float = 1.4
+    A1_TO_A2: float = 0.45
+    A2_TO_A3: float = 0.3
+    A3_HOLD_TIME: float = 2.1
+    INTRO_SETTLE: float = 0.9
+    CHARGE_TIME_OUT: float = 9.0
     LIBERATION_CD_SKIP: float = 1.5
-    SWITCH_IN_SETTLE: float = 0.5
+    LIB_ANIMATION_CAP: float = 6.0
+    ZHUIYI_HOLD_CAP: float = 8.0
+    DSL_BACK_CAP: float = 3.0
 
     def do_perform(self):
         if not self.perform_combat():
             self.switch_next_char()
 
     def perform_combat(self):
-        """攒能量 -> 大招可用则放大招接输出.
-
-        Returns:
-            bool: 放出了大招(并已在 try_liberation 内切人)返回 True, 否则 False.
-        """
-        start = time.time()
-
+        """攒相片 -> 大招可用就放大招打完追忆。放出了大招(已切人)返回 True。"""
         self.task.wait_until(lambda: self.task.in_team()[0], time_out=0.8)
-        self.sleep(self.SWITCH_IN_SETTLE, check_combat=False)  # 等技能栏渲染稳定再判大招
+        settle = (self.INTRO_SETTLE if self.has_intro else 0.3) - self.field_time()
+        if settle > 0:
+            self.sleep(settle, check_combat=False)
         self.task.next_frame()
+        # 延奏和格洛犸图声骸联动, 入场先放声骸(大招 CD 中提前走也要放到)
+        self.click_echo(time_out=0)
 
         if self.try_liberation():
             return True
 
-        while time.time() - start < self.CHARGE_TIME_OUT:
-            # 能量满但放不出(短CD / 切回UI未渲染读假 / 任何原因) -> 别溢出空攒, 直接切人
+        while self.field_time() < self.CHARGE_TIME_OUT:
+            # 能量满但放不出(短CD / 切回来UI没渲染好) -> 别空攒, 切人
             if self.energy_full() and not self.liberation_available():
                 self.logger.info('Lucilla energy full but liberation not castable, switch')
                 break
-
-            # 能量没满且大招在较长 CD -> 没必要攒, 切人省时间
+            # 能量没满且大招长 CD -> 不攒满, E 好了打一发追光(印象和协奏都留着)再走
             if not self.liberation_available() and self.task.get_cd('liberation') > self.LIBERATION_CD_SKIP:
                 self.logger.info('Lucilla liberation on long cd, switch to save time')
-                break    
-
+                if self.resonance_available():
+                    self.focus_shot()
+                    self.sleep(1.0)
+                break
             if self.try_liberation():
                 return True
-
-            self.charge_once()
-
+            if self.resonance_available():
+                self.focus_shot()
+                # 追光的印象松手后约 0.9 秒才到账, 这段时间等 R 亮
+                if self.task.wait_until(self.liberation_available, time_out=self.R_AFTER_FOCUS):
+                    continue
+            else:
+                # E 没好: A1 A2 长按 A3 拿一张相片; 还在追忆里的话就是打到断舍离
+                self.focus_a3()
+            self.task.next_frame()
         return False
 
-    def charge_once(self):
-        """攒 1 格回路能量: E 可用优先长按 E、否则蓄力重击.
-        """
-        if self.resonance_available():
-            self.hold_resonance(self.HOLD_TIME)
-        else:
-            self.heavy_attack(self.HOLD_TIME)
-        self.task.next_frame()
+    def focus_shot(self):
+        """长按 E 到聚焦环跑满, 自动出追光。不赌金色窗口: E 起手被缓存时定时松手会落进补光。"""
+        self.hold_key(self.get_resonance_key(), self.FOCUS_HOLD_TIME)
+        self.record_resonance_use()
+        self.logger.info(f'Lucilla focus E held {self.FOCUS_HOLD_TIME:.2f}s')
+
+    def focus_a3(self):
+        """A1 -> A2 -> 长按 A3 到聚焦环跑满(可圈可点, +50 印象)。"""
+        self.click()
+        self.sleep(self.A1_TO_A2)
+        self.click()
+        self.sleep(self.A2_TO_A3)
+        self.hold_mouse(self.A3_HOLD_TIME)
 
     def try_liberation(self):
-        """大招就绪则放招(顺带先放声骸), 返回是否放出。
-
-        仅在大招可用(能量满且无CD)时才放招; 未就绪只返回 False, 由外层(perform_combat 循环)
-        统一处理攒能量/长CD切人。不能用"非长CD就放"——那会在能量没满时空放声骸/大招。
-        """
+        """大招就绪则放(顺带先放声骸)并打完追忆、切人, 返回是否放出。"""
         if not self.liberation_available():
             return False
-
         if self.echo_available():
             self.click_echo(time_out=0)
-            
         self.perform_liberation()
         self.switch_next_char()
         return True
 
     def energy_full(self):
-        """回路能量是否已满(解放图标高亮, 忽略CD)。
-
-        liberation_available() 把"能量满"和"无CD"绑在一起判断, 故用 check_cd=False 单看能量满,
-        配合 not liberation_available() 即可识别"能量满但放不出(短CD/切回读假等)"而切人, 不攒溢出。
-        """
+        """相片是否已满(大招图标高亮, 忽略 CD)。"""
         return self.available('liberation', check_color=True, check_cd=False)
 
     def perform_liberation(self):
-        """放大招进入变身形态, 按住左键固定时长输出后切人.
+        """放大招 -> 等演出 -> 按住普攻打追忆直到断舍离。
 
-        不调用 BaseChar.click_liberation(): 它内部 ``while not in_team()`` 在变身形态下会因
-        in_team 误判卡死到超时抛异常. 这里用 liberation_available() 变 False
-        (大招图标消失 = 已进入形态) 作为放出信号.
-
+        不用 BaseChar.click_liberation(): 追忆形态下 HUD 判断不稳, 它的等待会误判。
+        这里放出判据是「HUD 消失」或「大招图标灭」。
         """
         if not self.task.use_liberation:
             return
-
         start = time.time()
-        while self.liberation_available() and time.time() - start < 1.5:
+        hud_gone_at = None
+        while time.time() - start < 1.5:
+            if not self.task.in_team()[0]:
+                hud_gone_at = time.time()
+                break
+            if not self.liberation_available():
+                break
             self.send_liberation_key()
             self.sleep(0.1, check_combat=False)
         self.record_liberation_use()
-        self.logger.info('Lucilla perform lib')
-
-        self.sleep(self.LIBERATION_ANIMATION_TIME, check_combat=False)
-        
-        # 恢复调用脉冲重击, con 归零会在内部自动提前 break
-        self.pulse_heavy_attack(self.LIBERATION_HEAVY_TIME)
-        self.logger.info('Lucilla perform lib end')
-
-    def pulse_heavy_attack(self, total_time):
-        """变身后脉冲式重击 total_time 秒: 反复 mouse_down/sleep/mouse_up.
-
-        每拍重新 mouse_down, 某拍被打断, 下一拍自动
-        重按恢复, 保证持续输出直到连招打完. 全程 check_combat=False
-        
-        检测 con 归零以提前结束脉冲. 变身激活时 con 会变非零, 变身结束动画时 con 会短暂归零.
-        若未检测到归零(如被连续打断), 则持续脉冲直到 total_time 兜底.
-        """
-        end = time.time() + total_time
-        seen_active = False
-        while time.time() < end:
-            self.task.mouse_down()
-            try:
-                self.sleep(min(self.HEAVY_PULSE_TIME, end - time.time()), check_combat=False)
-            finally:
-                self.task.mouse_up()
-            
-            con = self.task.get_current_con()
-            if con > 0.1:
-                seen_active = True
-            elif seen_active and con < 0.05:
-                self.logger.info('Lucilla transform ended, stop pulse heavy early')
-                break
-                
-            self.sleep(0.02, check_combat=False) 
-
-    def hold_resonance(self, duration):
-        """长按共鸣技能键一段时间 (攒 1 格回路能量)。
-
-        长按期间用 check_combat=False: 攒能量在正常态, in_combat() 偶发误判不应打断长按;
-        sleep 已推进帧, 无需忙等/额外 next_frame。
-        """
-        self.task.send_key_down(self.get_resonance_key())
+        self.task.in_liberation = True
         try:
-            self.sleep(duration, check_combat=False)
+            # 演出: HUD 回来就结束; HUD 读不到就按 4.5 秒保底
+            if hud_gone_at is None:
+                hud_gone_at = time.time()
+            self.task.wait_until(lambda: time.time() - hud_gone_at > 1.0 and self.task.in_team()[0],
+                                 time_out=self.LIB_ANIMATION_CAP)
+            if not self.task.in_team()[0]:
+                left = 4.5 - (time.time() - hud_gone_at)
+                if left > 0:
+                    self.sleep(left, check_combat=False)
+            self.add_freeze_duration(hud_gone_at, time.time() - hud_gone_at)
         finally:
-            self.task.send_key_up(self.get_resonance_key())
-        self.record_resonance_use()
+            self.task.in_liberation = False
+        self.logger.info('Lucilla liberation animation end, hold attack until 断舍离')
+        self.hold_until_dsl()
+
+    def hold_until_dsl(self):
+        """追忆: 按住普攻到断舍离(HUD 连续 2 帧消失), 再等 HUD 回来。"""
+        gone = 0
+        gone_at = None
+        start = time.time()
+        self.task.mouse_down()
+        try:
+            while time.time() - start < self.ZHUIYI_HOLD_CAP:
+                self.task.next_frame()
+                if time.time() - start < 1.0:
+                    continue
+                if not self.task.in_team()[0]:
+                    gone += 1
+                    if gone_at is None:
+                        gone_at = time.time()
+                    if gone >= 2:
+                        break
+                else:
+                    gone = 0
+                    gone_at = None
+        finally:
+            self.task.mouse_up()
+        if gone_at is None:
+            self.logger.info(f'Lucilla 断舍离 not seen in {self.ZHUIYI_HOLD_CAP}s, released')
+            gone_at = time.time()
+        # 断舍离期间不能切人, 等 HUD 回来
+        self.task.wait_until(lambda: time.time() - gone_at > 0.8 and self.task.in_team()[0],
+                             time_out=self.DSL_BACK_CAP)
+        self.add_freeze_duration(gone_at, time.time() - gone_at)
+
+    def hold_resonance(self, duration=None):
+        """兼容旧接口: 长按 E 对焦(时长固定用追光窗口)。"""
+        self.focus_shot()
 
     def get_switch_priority(self, current_char=None, has_intro=False, target_low_con=False):
         if has_intro and current_char and current_char.char_name in {'char_verina', 'char_shorekeeper'}:

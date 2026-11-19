@@ -90,6 +90,7 @@ class TestCombatCheck(TaskTestCase):
         task.find_one = lambda *args, **kwargs: False
         task.log_info = lambda *args, **kwargs: None
         task.is_browser = lambda: False
+        task.should_start_combat_by_key = lambda: False  # fork: coco-ww F-start reads the screen
         order = []
 
         class Char:
@@ -209,7 +210,12 @@ class TestCombatCheck(TaskTestCase):
         task._cloud_health_lost_at = time.time() - 10
         task.combat_end_condition = lambda: True
         task.reset_to_false = lambda reason='': reason
+        # fork(coco-ww): no boss bar left, and the echo must be seen on two checks before leaving combat
+        task.boss_still_alive = lambda: False
+        task.log_info = lambda *args, **kwargs: None
 
+        self.assertTrue(task.do_check_in_combat(False))
+        task._end_seen_since -= 1
         self.assertEqual(task.do_check_in_combat(False), 'end condition reached')
 
     def test_browser_target_enemy_accepts_health_bar_appearing(self):

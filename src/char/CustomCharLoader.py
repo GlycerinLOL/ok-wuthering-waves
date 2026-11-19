@@ -4,7 +4,7 @@ import inspect
 import json
 import re
 import shutil
-import tempfile
+import uuid
 import zipfile
 from pathlib import Path
 
@@ -39,6 +39,22 @@ _team_class_cache = {}
 # them once per member per team, which turns a scan over every team into a hundred
 # file reads. Cache the result and keep the existing clear hooks pointed at it.
 _builtin_code_cache = {}
+
+
+def make_work_folder(parent, prefix):
+    """在 parent 下建一个临时工作目录, 权限照常从 parent 继承。
+
+    不能用 tempfile.mkdtemp: Python 3.12.4 起它在 Windows 上建出来的目录只有创建者自己能访问。
+    程序是管理员身份运行的, 这种目录一旦改名成队伍目录, 普通权限的工具(备份、git、编辑器)就全读不了。
+    """
+    parent = Path(parent)
+    while True:
+        folder = parent / f"{prefix}{uuid.uuid4().hex[:8]}"
+        try:
+            folder.mkdir()
+            return folder
+        except FileExistsError:
+            continue
 
 
 def get_english_char_name(char_cls_or_name):
@@ -252,6 +268,23 @@ def team_code_state(team):
     if not all(get_team_import_file(class_names, name).is_file() for name in class_names):
         return TEAM_CODE_STATE_NONE
     return get_team_code_mode(class_names)
+
+
+def team_runs_custom_code(team):
+    """队伍现在跑的代码是不是自定义的: 任何一个成员的代码和内置的不一样就算。
+
+    直接写进队伍目录、没走过导入的队伍没有导入副本, team_code_state 是 none,
+    但跑的照样是自定义代码; 列表前面的圆点按这个画。"""
+    class_names = normalize_team(team)
+    try:
+        for class_name, char_cls in _team_char_classes(class_names).items():
+            current = read_team_char_code(class_names, char_cls).replace("\r\n", "\n")
+            if current != read_builtin_char_code(char_cls).replace("\r\n", "\n"):
+                return True
+    except Exception as e:
+        logger.error(f"compare team code with built in failed for {class_names}: {e}")
+        return True
+    return False
 
 
 def normalize_team_code(team):
@@ -477,7 +510,7 @@ def _load_team_char_class_from_file(char_cls, team, path):
     if cached and cached[0] == stat.st_mtime_ns and cached[1] == stat.st_size:
         return cached[2]
     custom_cls = _load_class_from_file(
-        char_cls, path, f"ok_ww_team_{team_key}_{char_cls.__name__}_{stat.st_mtime_ns}"
+        char_cls, path, f"coco_ww_team_{team_key}_{char_cls.__name__}_{stat.st_mtime_ns}"
     )
     _team_class_cache[cache_key] = (stat.st_mtime_ns, stat.st_size, custom_cls)
     return custom_cls
@@ -573,7 +606,7 @@ def import_custom_team(archive_info):
     codes = archive_info["codes"]
     folder = get_custom_team_folder(class_names)
     parent = get_custom_team_root(create=True)
-    temp_folder = Path(tempfile.mkdtemp(prefix=f".{get_team_key(class_names)}-", dir=parent))
+    temp_folder = make_work_folder(parent, f".{get_team_key(class_names)}-")
     try:
         for class_name in class_names:
             code = codes[class_name]
@@ -757,7 +790,7 @@ def _load_custom_char_class_from_file(char_cls, path):
     if cached and cached[0] == stat.st_mtime_ns and cached[1] == stat.st_size:
         return cached[2]
 
-    module_name = f"ok_ww_custom_char_{char_cls.__name__}_{stat.st_mtime_ns}"
+    module_name = f"coco_ww_custom_char_{char_cls.__name__}_{stat.st_mtime_ns}"
     custom_cls = _load_class_from_file(char_cls, path, module_name)
 
     _custom_class_cache[cache_key] = (stat.st_mtime_ns, stat.st_size, custom_cls)

@@ -41,8 +41,14 @@ from src.char.YangYangSp import YangYangSp
 from src.gui.CharacterCodeTab import (
     STATE_DOT_SIZE, CharacterCodeTab, ExportTeamDialog, ImportTeamDialog, TeamInfoDialog,
     TeamSelectionDialog, WorkshopDialog, fetch_all_workshop_teams, fetch_workshop_codes,
-    team_state_color, workshop_team_url,
+    team_state_color, workshop_team_slug, download_workshop_archive,
+    WORKSHOP_BASE_URLS, WORKSHOP_TIMEOUT, WORKSHOP_USER_AGENT,
 )
+
+
+def workshop_team_url(team):
+    # fork(coco-ww): the workshop is a GitHub repo tried via several mirrors; the first is the primary
+    return f"{WORKSHOP_BASE_URLS[0]}teams/{workshop_team_slug(team)}.json"
 
 
 class TestCharacterCodeTab(unittest.TestCase):
@@ -214,13 +220,13 @@ class TestCharacterCodeTab(unittest.TestCase):
     def test_workshop_url_uses_sorted_team_slug(self):
         self.assertEqual(
             workshop_team_url((Baizhi, Augusta, Aemeath)),
-            "https://okwwcharcode.ok-script.com/teams/Aemeath_Augusta_Baizhi.json",
+            WORKSHOP_BASE_URLS[0] + "teams/Aemeath_Augusta_Baizhi.json",
         )
 
     def test_workshop_url_sanitizes_character_name_punctuation(self):
         self.assertEqual(
             workshop_team_url((YangYangSp, Chisa, Suisui)),
-            "https://okwwcharcode.ok-script.com/teams/Chisa_Suisui_Yangyang_Xuanling.json",
+            WORKSHOP_BASE_URLS[0] + "teams/Chisa_Suisui_Yangyang_Xuanling.json",
         )
 
     def test_workshop_codes_are_sorted_by_timestamp_descending(self):
@@ -247,11 +253,10 @@ class TestCharacterCodeTab(unittest.TestCase):
         self.assertEqual([code["name"] for code in codes], ["newer", "older"])
         request = open_url.call_args.args[0]
         self.assertEqual(request.full_url, workshop_team_url((Aemeath, Augusta, Baizhi)))
-        self.assertEqual(request.get_header("User-agent"), "ok-wuthering-waves")
-        self.assertEqual(open_url.call_args.kwargs, {"timeout": 15})
+        self.assertEqual(request.get_header("User-agent"), WORKSHOP_USER_AGENT)
+        self.assertEqual(open_url.call_args.kwargs, {"timeout": WORKSHOP_TIMEOUT})
         log_info.assert_called_once_with(
-            "char code workshop request: "
-            "https://okwwcharcode.ok-script.com/teams/Aemeath_Augusta_Baizhi.json"
+            "char code workshop request: " + workshop_team_url((Aemeath, Augusta, Baizhi))
         )
 
     def test_workshop_404_is_an_empty_list(self):
@@ -269,38 +274,32 @@ class TestCharacterCodeTab(unittest.TestCase):
         self.assertEqual(codes[0]["name"], "Test code")
         self.assertEqual(codes[0]["team"], "Test team")
         request = open_url.call_args.args[0]
-        self.assertEqual(request.full_url, "https://okwwcharcode.ok-script.com/teams.json")
-        self.assertEqual(request.get_header("User-agent"), "ok-wuthering-waves")
-        self.assertEqual(open_url.call_args.kwargs, {"timeout": 15})
+        self.assertEqual(request.full_url, WORKSHOP_BASE_URLS[0] + "teams.json")
+        self.assertEqual(request.get_header("User-agent"), WORKSHOP_USER_AGENT)
+        self.assertEqual(open_url.call_args.kwargs, {"timeout": WORKSHOP_TIMEOUT})
 
-    def test_workshop_archive_sends_app_user_agent(self):
-        tab = CharacterCodeTab()
-        try:
-            for field, url, expected_url in (
-                ("downloadUrl", "https://okwwcharcode.ok-script.com/team.zip",
-                 "https://okwwcharcode.ok-script.com/team.zip"),
-                ("rawUrl", "https://raw.githubusercontent.com/example/team.zip",
-                 "https://raw.githubusercontent.com/example/team.zip"),
-                ("downloadUrl", "https://okwwcharcode.ok-script.com/codes/team%20name.zip",
-                 "https://okwwcharcode.ok-script.com/codes/team%20name.zip"),
-            ):
-                with (
-                    self.subTest(url=url),
-                    patch("src.gui.CharacterCodeTab.urlopen") as open_url,
-                    patch.object(tab, "_preview_and_import_archive") as preview,
-                ):
-                    open_url.return_value.__enter__.return_value.read.return_value = b"archive contents"
-                    preview.side_effect = lambda path, **kwargs: self.assertEqual(
-                        path.read_bytes(), b"archive contents")
-                    tab._import_workshop_code({field: url}, tab)
+    def test_workshop_archive_downloads_by_filename_from_workshop_repo(self):
+        # fork(coco-ww): the index's downloadUrl is ignored; only the filename is used, under codes/ in the repo
+        with (
+            patch("src.gui.CharacterCodeTab.urlopen") as open_url,
+            patch("src.gui.CharacterCodeTab.inspect_team_archive") as inspect,
+        ):
+            open_url.return_value.__enter__.return_value.read.return_value = b"archive contents"
+            inspect.side_effect = lambda path: path.read_bytes()
+            result = download_workshop_archive({
+                "filename": "team name.zip", "downloadUrl": "https://evil.invalid/team.zip"})
 
-                    request = open_url.call_args.args[0]
-                    self.assertEqual(request.full_url, expected_url)
-                    self.assertEqual(request.get_header("User-agent"), "ok-wuthering-waves")
-                    self.assertEqual(open_url.call_args.kwargs, {"timeout": 30})
-                    preview.assert_called_once()
-        finally:
-            tab.deleteLater()
+        self.assertEqual(result, b"archive contents")
+        request = open_url.call_args.args[0]
+        self.assertEqual(request.full_url, WORKSHOP_BASE_URLS[0] + "codes/team%20name.zip")
+        self.assertEqual(request.get_header("User-agent"), WORKSHOP_USER_AGENT)
+        self.assertEqual(open_url.call_args.kwargs, {"timeout": WORKSHOP_TIMEOUT})
+
+    def test_workshop_archive_rejects_non_zip_filename(self):
+        with patch("src.gui.CharacterCodeTab.urlopen") as open_url:
+            with self.assertRaises(ValueError):
+                download_workshop_archive({"filename": "team.py"})
+        open_url.assert_not_called()
 
     def test_team_dialogs_use_qt_kit_widgets(self):
         parent = CharacterCodeTab()
@@ -413,7 +412,9 @@ class TestCharacterCodeTab(unittest.TestCase):
             for team, state, tooltip in (
                     (team_a, TEAM_CODE_MODE_IMPORT, "Imported code is in effect"),
                     (team_b, TEAM_CODE_MODE_BUILTIN, "Built in code is in effect"),
-                    (team_c, TEAM_CODE_MODE_BUILTIN, "Never imported code, skipped by Switch All")):
+                    # fork(coco-ww): the dot/tooltip follow the code actually running, so a never imported
+                    # team on built in code reads like team B
+                    (team_c, TEAM_CODE_MODE_BUILTIN, "Built in code is in effect")):
                 _row, item = self._row(tab, team)
                 self._assert_team_marked(tab, team, state)
                 self.assertEqual(item.toolTip(), tooltip)

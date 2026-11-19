@@ -1,5 +1,5 @@
 import unittest
-from unittest.mock import patch
+from unittest.mock import PropertyMock, patch
 
 from src.task.BaseCombatTask import BaseCombatTask, CharRevivedException
 from src.task.DomainTask import DomainTask
@@ -158,15 +158,17 @@ class TestFarmEchoDeathReentry(unittest.TestCase):
             with self.subTest(is_team=is_team):
                 task = FarmEchoTask.__new__(FarmEchoTask)
                 task.config = {'Teleport to Boss': 'Boss Challenge', 'Which Boss Challenge to Teleport': 1}
-                task.total_boss_number = 20
                 task.realm_entry_at_heal_point = True
                 noop = lambda *args, **kwargs: None
-                for name in ('ensure_main', 'info_set', 'openF2Book', 'open_boss_book', 'click_team_challenge',
+                # fork(coco-ww): name-based F2 lookup + retrying challenge entry replace the old index helpers
+                for name in ('ensure_main', 'info_set', 'openF2Book', 'open_boss_book', 'click_challenge_until_in_world',
                              'wait_click_travel', 'wait_in_team_and_world', 'sleep'):
                     setattr(task, name, noop)
-                task.click_on_book_target = lambda *args: is_team
+                task.click_book_target_by_name = lambda *args: 'boss'
+                task.wait_after_book_click = lambda: is_team
 
-                task.teleport_to_configured_boss()
+                with patch.object(FarmEchoTask, 'game_lang', new_callable=PropertyMock, return_value='en_US'):
+                    task.teleport_to_configured_boss()
 
                 self.assertEqual(expected, task.realm_entry_at_heal_point)
 

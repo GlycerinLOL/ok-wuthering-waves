@@ -230,7 +230,10 @@ class TestChar(TaskTestCase):
         suisui._lock_after_switch = True
         suisui.switch_out(con_full=True)
         self.assertEqual(suisui.get_switch_priority(), SwitchPriority.NO)
+        # fork(coco-ww): never switched out (-1) no longer means MUST; test the >40s rule after a real switch
         suisui.last_forte3_switch = -1
+        self.assertNotEqual(suisui.get_switch_priority(), SwitchPriority.MUST)
+        suisui.last_forte3_switch = time.time() - 100
         self.assertEqual(suisui.get_switch_priority(), SwitchPriority.MUST)
 
     def test_has_all_buff_requires_intro_and_two_active_timed_buffs(self):
@@ -378,6 +381,7 @@ class TestChar(TaskTestCase):
         elapsed = [0]
         suisui.time_elapsed_accounting_for_freeze = lambda start: elapsed[0]
         task.chars = [main_dps, suisui, sub_dps]
+        suisui.last_forte3_switch = 1  # fork(coco-ww): MUST after 40s needs a prior switch-out
 
         elapsed[0] = 15.9
         self.assertEqual(
@@ -1104,6 +1108,7 @@ class TestChar(TaskTestCase):
         healer.last_buff_time = time.time()
         sub_dps.last_buff_time = time.time()
 
+        aemeath.last_perform = time.time()  # fork(coco-ww): perform() sets this; total cap uses field_time()
         aemeath.perform_everything()
 
         self.assertEqual(aemeath.actions, ['lib2'])
@@ -1298,6 +1303,7 @@ class TestChar(TaskTestCase):
                 pass
 
         aemeath = TrackingAemeath(Task())
+        aemeath.last_perform = time.time()  # fork(coco-ww): perform() sets this; total cap uses field_time()
         aemeath.perform_everything()
         self.assertEqual(aemeath.actions, ['lib1', 'enhance_e', 'lib1'])
 

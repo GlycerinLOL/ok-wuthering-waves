@@ -7,6 +7,12 @@ import numpy as np
 
 
 class Camellya(BaseChar):
+    """椿(湮灭主C)。
+
+    白椿: 普攻 5 段(第 5 段自动), 第 4 段转圈长按会一直转、闪红光后加速; 重击挑飞, 按住不放接第 4 段转圈。
+    红椿: E 进入(被藤吊在空中, 能闪避不能移动), 普攻 4 段, 第 3 段同样能长按转; 再按 E / 跳跃退回白椿。
+    E 图标变红是「一日花」(这里等协奏满再放), 放完进含苞, 期间长按普攻持续打。
+    """
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -32,6 +38,8 @@ class Camellya(BaseChar):
             self.sleep(0.1)
             if time.time() - start > timeout:
                 self.logger.error('wait wait_resonance_not_gray timed out')
+                return False
+        return True
 
     def on_combat_end(self, chars):
         self.switch_other_char()
@@ -47,7 +55,7 @@ class Camellya(BaseChar):
         if start_con < 0.82:
             loop_time = 1.1
             if self.resonance_available():
-                self.click_resonance()
+                self.click_resonance(time_out=1)
         else:
             loop_time = 4.6
         budding_start_time = time.time()
@@ -56,7 +64,8 @@ class Camellya(BaseChar):
         freeze_forte_check = False
         freeze_forte_time = 0
         self.last_forte = 0
-        while time.time() - budding_start_time < loop_time or self.task.find_one('camellya_budding', threshold=0.7):
+        loop_start = time.time()
+        while (time.time() - budding_start_time < loop_time or self.task.find_one('camellya_budding', threshold=0.7))                 and time.time() - loop_start < 14:
             if not budding:
                 if self.ephemeral_ready() and self.is_con_full():
                     self.ephemeral_cast()
@@ -98,7 +107,7 @@ class Camellya(BaseChar):
             self.task.mouse_up()
             self.sleep(0.1)
         if budding:
-            self.click_resonance()
+            self.click_resonance(time_out=1)
             self.sleep(0.1)
         self.click_echo()
         self.switch_next_char()
@@ -151,7 +160,8 @@ class Camellya(BaseChar):
 
     def ephemeral_cast(self):
         self.check_combat()
-        while self.ephemeral_ready():
+        start = time.time()
+        while self.ephemeral_ready() and time.time() - start < 2:
             self.send_resonance_key()
             self.sleep(0.1)
         self.sleep(1.1)

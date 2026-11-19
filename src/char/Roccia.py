@@ -27,7 +27,7 @@ class Roccia(BaseChar):
             if not self.liberation_available() and not self.resonance_available():
                 return self.switch_next_char()
         liberated = self.click_liberation()
-        if self.click_resonance()[0] or not liberated:
+        if self.click_resonance(time_out=1)[0] or not liberated:
             self.plunge()
             return self.switch_next_char()
         self.click_echo()

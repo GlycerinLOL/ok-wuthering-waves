@@ -30,9 +30,15 @@ class Zhezhi(BaseChar):
             self.resonance_until_not_blue()
             return self.switch_next_char()
         elif self.resonance_available() and not self.is_forte_full():
-            pass
+            # 3 段普攻约 +45 灵韵, 攒满再放 E 出鹤影
+            self.attack_while(1.2, stop=self.is_forte_full)
+            if self.is_forte_full() and self.resonance_available():
+                self.click_resonance(send_click=False, time_out=1)
+                self.continues_normal_attack(0.8)
+                self._resonance_blue = True
+                return self.switch_next_char()
         elif self.resonance_available() and self.is_forte_full():
-            self.click_resonance()
+            self.click_resonance(time_out=1)
             self.continues_normal_attack(0.8)
             self._resonance_blue = True
             return self.switch_next_char()
@@ -88,7 +94,7 @@ class Zhezhi(BaseChar):
                 self.is_con_full() and self.char_carlotta.get_ready()):
             if self.con_lock() and self.click_liberation():
                 self.sleep(0.2)
-            self.click_resonance()
+            self.click_resonance(time_out=1)
             self.continues_normal_attack(0.8)
         if self.con_lock():
             if self.resonance_blue() and self.resonance_available():

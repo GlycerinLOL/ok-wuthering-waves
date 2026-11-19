@@ -22,6 +22,8 @@ class Hiyuki(BaseChar):
     HOLD_LIB_CD_WAIT: float = 1.5
     # 重击/大招前等"重新锁定敌人(has_long_action2)"的最长等待 (秒): 超时仍未锁上则跳过本次, 不空招
     WAIT_LOCK_TIME_OUT: float = 2.0
+    # 一大(最多 16s) + 二大(最多 16s) 一次上场可能超过默认 30 秒
+    PERFORM_HARD_TIMEOUT = 40.0
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -73,7 +75,8 @@ class Hiyuki(BaseChar):
             if self.is_mouse_forte_full():
                 self.task.click(key="right")
                 self.heavy_click_forte(check_fun=self.is_mouse_forte_full)
-                self.task.wait_until(self.liberation_available, post_action=self.click_with_interval, time_out=self.FIELD_TIME_OUT)
+                # 重击后大招一般马上亮; 等不到别耗满整段在场时间
+                self.task.wait_until(self.liberation_available, post_action=self.click_with_interval, time_out=3.0)
                 if self.click_liberation():
                     self.logger.debug('hiyuki perform lib1')
                     return

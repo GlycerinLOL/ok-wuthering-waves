@@ -181,6 +181,7 @@ config = {
     'global_configs': [basic_config_option, key_config_option, char_config_option, monthly_card_config_option],
     'custom_tabs': [  # fork: restored (removed upstream in v3.7.15); workshop server is offline
         ["src.gui.CharacterCodeTab", "CharacterCodeTab"],
+        ["src.recorder.RecorderTab", "AxisRecorderTab"],  # fork: from coco-ww
     ],
     'ocr': {
         'lib': 'onnxocr',
@@ -301,6 +302,8 @@ config = {
         ["src.task.SkipDialogTask", "AutoDialogTask"],
         ["src.task.FastTravelTask", "FastTravelTask"],
         ["src.task.MouseResetTask", "MouseResetTask"],
+        ["src.recorder.AxisRecorder", "AxisRecorderTask"],  # fork: from coco-ww
+        ["src.combat.FKeyStart", "FStartCombatTask"],  # fork: hidden shell for old team code
     ], 'scene': ["src.scene.WWScene", "WWScene"],
     'update_pyappify': {
         'to_version': '1.2.3',

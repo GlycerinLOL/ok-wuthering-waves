@@ -2296,3 +2296,36 @@ msgstr "為每個帳號分別設定任務。關閉時執行原有多帳號每日
 
 msgid "Edit account order, enabled accounts, tasks and task settings."
 msgstr "編輯帳號順序、啟用狀態、執行任務及任務設定。"
+
+msgid "Lily"
+msgstr "莉莉"
+
+msgid "Qingxiao"
+msgstr "清宵"
+
+msgid "Suoming"
+msgstr "鎖暝"
+
+msgid "Weekly Boss Name"
+msgstr "週常挑戰Boss"
+
+msgid "Boss Challenge Name"
+msgstr "Boss挑戰Boss"
+
+msgid "Special Nightmare Name"
+msgstr "特異夢魘Boss"
+
+msgid "Found by name in the list, new bosses appear here after one run"
+msgstr "按名字在列表裡找，遊戲加新Boss也不會點錯；新Boss跑過一次後重啟就能選"
+
+msgid "boss book: clicked {name}"
+msgstr "素材獲取：選中 {name}"
+
+msgid "boss book: {wanted} not found, list has: {names}"
+msgstr "素材獲取裡沒找到 {wanted}，列表裡有：{names}"
+
+msgid "challenge: {button} did not respond, click again"
+msgstr "進本：「{button}」沒反應，補點一次"
+
+msgid "challenge: not in world after {seconds}s"
+msgstr "進本：{seconds} 秒還沒進到副本"
