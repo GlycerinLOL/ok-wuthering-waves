@@ -69,6 +69,7 @@ Claude Code 不會自動載入 `.agents/skills/`，依任務手動讀對應 `SKI
   - `config.py` 衝突 → 保留雙方，`custom_tabs` 那段留著。
   - 上游刪了 `src/gui/CharacterCodeTab.py` 或它 import 的模組（`CustomCharLoader` 等）→ merge 不會報衝突、會靜默刪除，測試會抓到；用 `git checkout ORIG_HEAD -- <檔案>` 拿回來再修相容性。
   - ok-script 拿掉 `custom_tabs` 支援 → 第三個測試失敗，需改用其他掛載方式，先回報使用者。
+  - 上游 d0a59291（v3.8.5）整套移除自訂角色與無音清剿；fork 全數保留並自行維護：`CustomCharLoader.py`、`CharacterCodeTask.py`、`src/web/character_code/`、`TacetEliminationTask.py`、`CharFactory.apply_team_char_classes` 與 `BaseCombatTask` 內的呼叫、`config.py` 的 Tacet 任務項、i18n 對應條目。上游改到這些檔時要保留 fork 這側。
 - 功能開 branch（`feat/...`、`fix/...`），完成後 merge 回 master。
 - 降低衝突：優先新增檔案，少改熱檔（`BaseCombatTask.py`、`BaseWWTask.py`、`FarmEchoTask.py`、`CharFactory.py`、`BaseChar.py`）；`config.py` 任務清單只在尾端追加；不做順手格式化/重構。
 - 本檔用 `git add -f CLAUDE.md` 追蹤（上游 `.gitignore` 忽略它，同步不會衝突）。不要改上游 `.gitignore`；本機雜項（`.omc/`）放 `.git/info/exclude`。
