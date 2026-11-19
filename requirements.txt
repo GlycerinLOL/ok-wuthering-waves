@@ -167,3 +167,5 @@ urllib3==2.7.0
     #   requests
 uvicorn==0.54.0
     # via mcp
+opencc==1.4.2
+    # fork: ok-script OCR auto_simplify (zh_TW UI) imports it; upstream does not declare it
