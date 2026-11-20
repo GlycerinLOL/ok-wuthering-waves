@@ -192,6 +192,9 @@ def _find_registered_char(task, box, info):
     return task.find_best_match_in_box(box, template_names, threshold=0.6)
 
 
+CHANGE_CHAR_MIN_CONFIDENCE = 0.70  # fork: see get_char_by_pos
+
+
 def get_char_by_pos(task, box, index, old_char):
     highest_confidence = 0
     info = None
@@ -212,6 +215,12 @@ def get_char_by_pos(task, box, index, old_char):
             return old_char
     if not char:
         char = task.find_best_match_in_box(box, char_names, threshold=0.6)
+        # fork: a dimmed portrait (switch cooldown) of a confirmed char reads as someone else at ~0.6
+        # (2026-11-20 Lily -> Jiyan 0.60~0.68); real portraits read >= 0.75, so keep the confirmed char
+        if (char and old_char and old_char.confidence > 0.92 and old_char.char_name in char_names
+                and char.name != old_char.char_name and char.confidence < CHANGE_CHAR_MIN_CONFIDENCE):
+            task.log_info(f'keep {old_char.char_name} in slot {index}: {char.name} {char.confidence:.2f} is too weak')
+            return old_char
         if char:
             info = char_dict.get(char.name)
             name = char.name
