@@ -35,7 +35,7 @@ from src.char.CustomCharLoader import (
     TEAM_CODE_MODE_BUILTIN, TEAM_CODE_MODE_IMPORT, TEAM_CODE_STATE_NONE,
     changed_import_members, create_custom_team, team_runs_custom_code, delete_custom_team, drifted_team_members,
     export_custom_team, get_custom_team_folder, get_english_char_name,
-    import_custom_team, inspect_team_archive, list_custom_teams, normalize_custom_teams,
+    import_custom_team, inspect_team_archive, list_custom_teams, normalize_custom_teams, normalize_team_code,
     normalize_team, read_builtin_char_code, read_team_char_code, read_team_manifest,
     save_team_code_as_import, switch_all_teams_code_mode, switch_team_code_mode, team_code_state,
 )
@@ -229,6 +229,7 @@ def translate_ui(message):
             "The current code of {names} is neither the built in nor the imported code of this team and is lost when switching.": "{names} 的当前代码既不是该队伍的内置代码，也不是导入代码，切换后将丢失。",
             "Keep as Imported Code and Switch": "保存为导入代码并切换",
             "Skipped {count} teams whose current code is not kept as imported code, switch them one by one.": "已跳过 {count} 个当前代码未保存为导入代码的队伍，请逐个切换。",
+            "Kept the edited current code of {count} teams as their imported code.": "已将 {count} 个队伍改过的当前代码保存为导入代码。",
             "Partially Completed": "部分完成",
         },
         "zh_TW": {
@@ -281,6 +282,7 @@ def translate_ui(message):
             "The current code of {names} is neither the built in nor the imported code of this team and is lost when switching.": "{names} 的目前程式碼既不是該隊伍的內建程式碼，也不是匯入程式碼，切換後將遺失。",
             "Keep as Imported Code and Switch": "儲存為匯入程式碼並切換",
             "Skipped {count} teams whose current code is not kept as imported code, switch them one by one.": "已跳過 {count} 個目前程式碼未儲存為匯入程式碼的隊伍，請逐一切換。",
+            "Kept the edited current code of {count} teams as their imported code.": "已將 {count} 個隊伍改過的目前程式碼儲存為匯入程式碼。",
             "Partially Completed": "部分完成",
         },
         "ja_JP": {
@@ -333,6 +335,7 @@ def translate_ui(message):
             "The current code of {names} is neither the built in nor the imported code of this team and is lost when switching.": "{names} の現在のコードは、このチームの組み込みコードでもインポートしたコードでもないため、切り替えると失われます。",
             "Keep as Imported Code and Switch": "インポートしたコードとして保存して切り替え",
             "Skipped {count} teams whose current code is not kept as imported code, switch them one by one.": "現在のコードがインポートしたコードとして保存されていない {count} 個のチームをスキップしました。個別に切り替えてください。",
+            "Kept the edited current code of {count} teams as their imported code.": "{count} 個のチームの編集済みの現在のコードをインポートしたコードとして保存しました。",
             "Partially Completed": "一部完了",
         },
         "ko_KR": {
@@ -385,6 +388,7 @@ def translate_ui(message):
             "The current code of {names} is neither the built in nor the imported code of this team and is lost when switching.": "{names}의 현재 코드는 이 팀의 내장 코드도 가져온 코드도 아니므로 전환하면 사라집니다.",
             "Keep as Imported Code and Switch": "가져온 코드로 저장 후 전환",
             "Skipped {count} teams whose current code is not kept as imported code, switch them one by one.": "현재 코드가 가져온 코드로 저장되지 않은 {count}개 팀을 건너뛰었습니다. 하나씩 전환하세요.",
+            "Kept the edited current code of {count} teams as their imported code.": "{count}개 팀의 수정된 현재 코드를 가져온 코드로 저장했습니다.",
             "Partially Completed": "일부 완료",
         },
         "es_ES": {
@@ -437,6 +441,7 @@ def translate_ui(message):
             "The current code of {names} is neither the built in nor the imported code of this team and is lost when switching.": "El código actual de {names} no es ni el código integrado ni el importado de este equipo y se perderá al cambiar.",
             "Keep as Imported Code and Switch": "Guardar como código importado y cambiar",
             "Skipped {count} teams whose current code is not kept as imported code, switch them one by one.": "Se omitieron {count} equipos cuyo código actual no está guardado como código importado; cámbialos uno por uno.",
+            "Kept the edited current code of {count} teams as their imported code.": "Se guardó el código actual editado de {count} equipos como su código importado.",
             "Partially Completed": "Completado parcialmente",
         },
     }
@@ -1165,7 +1170,6 @@ class CharacterCodeTab(CustomTab):
         splitter.setStretchFactor(1, 1)
         self.add_widget(splitter, stretch=1)
         self._set_editor_enabled(False)
-        normalize_custom_teams()
         self._refresh_team_list()
         theme.changed.connect(self._refresh_theme)
 
@@ -1194,6 +1198,8 @@ class CharacterCodeTab(CustomTab):
 
     def _refresh_team_list(self, selected_team=None):
         selected_team = normalize_team(selected_team) if selected_team else self.current_team
+        # 程序开着时直接丢进 custom_teams 的队伍, 刷新列表时也补上导入副本
+        normalize_custom_teams()
         teams = list_custom_teams()
         states = {team: team_code_state(team) for team in teams}
         self.team_list.blockSignals(True)
@@ -1663,6 +1669,7 @@ class CharacterCodeTab(CustomTab):
     def _switch_all_code_mode(self):
         if not self._settle_unsaved_changes():
             return
+        normalize_custom_teams()
         states = {team: team_code_state(team) for team in list_custom_teams()}
         target, switchable = self._switch_all_target(states)
         if not switchable:
@@ -1696,6 +1703,10 @@ class CharacterCodeTab(CustomTab):
         skipped = len(states) - len(switchable)
         if skipped:
             parts.append(translate_ui("Skipped {count} teams that never imported code.").format(count=skipped))
+        if summary["kept"]:
+            parts.append(translate_ui(
+                "Kept the edited current code of {count} teams as their imported code."
+            ).format(count=len(summary["kept"])))
         if summary["drifted"]:
             parts.append(translate_ui(
                 "Skipped {count} teams whose current code is not kept as imported code, switch them one by one."
@@ -1711,6 +1722,10 @@ class CharacterCodeTab(CustomTab):
         if self.current_team is None or self.current_char_cls is None:
             return
         team = self.current_team
+        try:
+            normalize_team_code(team)
+        except Exception as e:
+            self.logger.error(f"normalize team code failed for {team}: {e}")
         state = team_code_state(team)
         if state == TEAM_CODE_STATE_NONE:
             self._reset_to_builtin_code()

@@ -469,9 +469,9 @@ class TestCharacterCodeTab(unittest.TestCase):
         finally:
             tab.deleteLater()
 
-    def test_never_imported_team_only_resets_the_editor(self):
-        """A created team has nothing to switch: its button puts the built in code of
-        the current character into the editor and writes nothing."""
+    def test_never_imported_edited_team_is_kept_as_imported_code(self):
+        """fork (coco-ww v1.0.4): code written straight into a team folder is what runs, so
+        opening the tab keeps it as the team's imported code and switches the team to import."""
         team = (Mortefi, Chixia, Verina)
         create_custom_team(team)
         local_code = read_builtin_char_code(Mortefi) + "\n# local only\n"
@@ -479,24 +479,10 @@ class TestCharacterCodeTab(unittest.TestCase):
 
         tab = CharacterCodeTab()
         try:
-            self.assertIs(tab.current_char_cls, Chixia)
-            self.assertEqual(tab.reset_button.text(), "Reset to Built In")
-            self.assertFalse(tab.reset_button.isEnabled())
-
-            tab.member_combo.setCurrentIndex(tab.member_combo.findData(Mortefi.__name__))
-            self.assertEqual(tab.reset_button.text(), "Reset to Built In")
-            self.assertTrue(tab.reset_button.isEnabled())
-            with (
-                patch("src.gui.CharacterCodeTab.confirmation_dialog") as message_box,
-                patch("src.gui.CharacterCodeTab.show_info_bar"),
-            ):
-                message_box.return_value.exec.return_value = True
-                tab.reset_button.click()
-
-            self.assertEqual(tab.editor.toPlainText(), read_builtin_char_code(Mortefi))
-            self.assertFalse(tab.reset_button.isEnabled())
+            self.assertEqual(get_team_code_mode(team), TEAM_CODE_MODE_IMPORT)
             self.assertEqual(read_team_char_code(team, Mortefi), local_code)
-            self.assertEqual(team_code_state(team), TEAM_CODE_STATE_NONE)
+            self.assertEqual(read_team_import_code(team, Mortefi), local_code)
+            self.assertEqual(tab.reset_button.text(), "Switch to Built In Code")
         finally:
             tab.deleteLater()
 
@@ -658,7 +644,7 @@ class TestCharacterCodeTab(unittest.TestCase):
         finally:
             tab.deleteLater()
 
-    def test_switch_all_code_mode_keeps_locally_edited_code_out_of_the_switch(self):
+    def test_switch_all_code_mode_keeps_locally_edited_code_as_imported_code(self):
         _team_a, _team_b, team_c = self._make_teams()
         local_code = read_builtin_char_code(Augusta) + "\n# local only\n"
         save_team_char_code(team_c, Augusta, local_code)
@@ -672,9 +658,10 @@ class TestCharacterCodeTab(unittest.TestCase):
                 message_box.return_value.exec.return_value = True
                 tab._switch_all_code_mode()
 
+            # fork (coco-ww v1.0.4): the edited code is kept as team C's imported code, not dropped
             self.assertEqual(read_team_char_code(team_c, Augusta), local_code)
-            self.assertEqual(get_team_code_mode(team_c), TEAM_CODE_MODE_BUILTIN)
-            self.assertEqual(team_code_state(team_c), TEAM_CODE_STATE_NONE)
+            self.assertEqual(read_team_import_code(team_c, Augusta), local_code)
+            self.assertEqual(get_team_code_mode(team_c), TEAM_CODE_MODE_IMPORT)
         finally:
             tab.deleteLater()
 

@@ -2336,6 +2336,15 @@ msgstr "素材獲取：選中 {name}"
 msgid "boss book: {wanted} not found, list has: {names}"
 msgstr "素材獲取裡沒找到 {wanted}，列表裡有：{names}"
 
+msgid "boss book: clicked {name} ({button})"
+msgstr "素材獲取：點 {name} 的「{button}」"
+
+msgid "boss book: {wanted} is in the list but has no Go/Challenge button"
+msgstr "素材獲取裡有 {wanted}，但這一行沒有「前往」/「直接挑戰」按鈕（可能還沒解鎖）"
+
+msgid "boss book: clicked {button}, but neither map nor challenge screen opened"
+msgstr "點了「{button}」，10 秒內沒打開地圖傳送也沒進挑戰介面"
+
 msgid "challenge: {button} did not respond, click again"
 msgstr "進本：「{button}」沒反應，補點一次"
 

@@ -52,7 +52,11 @@ class FakeBookTask(FarmEchoTask):
         return None
 
     def scroll_relative(self, x, y, count):
-        self.page += 1
+        # 负数往下翻一页（录的就是一次滚 10 格一页）；正数往上，滚到顶不再动
+        if count < 0:
+            self.page = min(self.page + 1, len(self.pages) - 1)
+        else:
+            self.page = max(0, self.page - max(1, count // 10))
 
     def click(self, box, *args, **kwargs):
         self.clicked = box

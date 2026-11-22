@@ -326,14 +326,24 @@ class Mortefi(BuiltinMortefi):
         self.assertEqual(read_team_import_code(team, Mortefi), current_code)
         self.assertEqual(read_team_import_code(team, Chixia), read_builtin_char_code(Chixia))
 
-    def test_normalize_leaves_a_never_imported_team_alone(self):
+    def test_normalize_leaves_a_never_imported_built_in_team_alone(self):
         team = (Mortefi, Chixia, Verina)
         create_custom_team(team)
-        save_team_char_code(team, Mortefi, self._team_code("local"))
 
         self.assertEqual(normalize_team_code(team), [])
         self.assertEqual(team_code_state(team), TEAM_CODE_STATE_NONE)
         self.assertFalse(get_team_import_file(team, Mortefi).is_file())
+
+    def test_normalize_keeps_a_never_imported_edited_team_as_imported_code(self):
+        # fork (coco-ww v1.0.4): code written straight into the folder runs, keep it as imported code
+        team = (Mortefi, Chixia, Verina)
+        create_custom_team(team)
+        save_team_char_code(team, Mortefi, self._team_code("local"))
+
+        self.assertEqual(normalize_team_code(team), ["Chixia", "Mortefi", "Verina"])
+        self.assertEqual(get_team_code_mode(team), TEAM_CODE_MODE_IMPORT)
+        self.assertEqual(read_team_import_code(team, Mortefi), self._team_code("local"))
+        self.assertEqual(read_team_char_code(team, Mortefi), self._team_code("local"))
 
     def test_switch_team_code_mode_keeps_the_imported_copy(self):
         team = (Mortefi, Chixia, Verina)

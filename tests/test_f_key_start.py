@@ -207,6 +207,87 @@ class FKeyWatcherTest(unittest.TestCase):
         watcher.on_sample(True, False)
         self.assertGreater(watcher.last_press, 0)
 
+    def test_self_sent_f_is_ignored(self):
+        """前台输入下 coco-ww 自己按的 F 会改按键状态, 不能当成玩家按的。"""
+        watcher = FKeyWatcher()
+        watcher.is_game_foreground = lambda: True
+        watcher.note_self_key('F', 0.02)
+        watcher.on_sample(True, False)
+        self.assertEqual(watcher.last_press, -1.0, '自己点一下 F')
+        watcher.note_self_key('e', 0.02)
+        watcher._self_until = 0.0
+        watcher.on_sample(True, False)
+        self.assertGreater(watcher.last_press, 0, '别的键不影响, 宽限过了照常认')
+
+    def test_self_held_f_is_ignored_until_grace_ends(self):
+        watcher = FKeyWatcher()
+        watcher.is_game_foreground = lambda: True
+        watcher.note_self_key('f')
+        watcher._self_until = 0.0
+        watcher.on_sample(True, False)
+        self.assertEqual(watcher.last_press, -1.0, '自己按住 F 期间')
+        watcher.note_self_key_up('f')
+        watcher.on_sample(True, False)
+        self.assertEqual(watcher.last_press, -1.0, '刚松开还在宽限里')
+        watcher._self_until = 0.0
+        watcher.on_sample(True, False)
+        self.assertGreater(watcher.last_press, 0, '宽限过了玩家按 F 照常认')
+
+
+class SelfFFilterTest(unittest.TestCase):
+    def test_filter_hides_only_self_pressed_f(self):
+        watcher = FKeyWatcher()
+        pressed = -32768  # c_short 的高位
+        reads = FKeyStart._filter_self_f(lambda vk: pressed, watcher)
+        self.assertEqual(reads(FKeyStart.F_VK), pressed, '没在自己按 F: 原样返回')
+        watcher.note_self_key('f', 0.05)
+        self.assertEqual(reads(FKeyStart.F_VK), 0, '自己按 F 期间读成没按')
+        self.assertEqual(reads(0x45), pressed, '别的键不管')
+        watcher._self_until = 0.0
+        self.assertEqual(reads(FKeyStart.F_VK), pressed, '宽限过了恢复')
+
+    def test_team_code_style_reader_goes_through_filter(self):
+        """队伍代码的写法: 每次从 ctypes.windll.user32 上取 GetAsyncKeyState, 还会给它设 restype。"""
+        import ctypes
+        self.assertTrue(FKeyStart.install_self_f_filter())
+        self.assertTrue(FKeyStart.install_self_f_filter(), '重复装不会包两层')
+        user32 = ctypes.windll.user32
+        self.assertTrue(getattr(user32.GetAsyncKeyState, 'coco_self_f_filter', False))
+        user32.GetAsyncKeyState.restype = ctypes.c_short
+        self.assertIsInstance(user32.GetAsyncKeyState(0x46) & 0x8000, int)
+
+
+class ForegroundInputTest(unittest.TestCase):
+    def test_pynput_reports_f_before_sending(self):
+        from ok.device.interaction_methods.pynput import PynputInteraction
+        from src.foreground_input import Pynput
+        sent = []
+        originals = {name: getattr(PynputInteraction, name) for name in ('send_key', 'send_key_down', 'send_key_up')}
+        PynputInteraction.send_key = lambda self, key, down_time=0.01: sent.append(
+            ('key', key, f_key_watcher._self_pressing()))
+        PynputInteraction.send_key_down = lambda self, key: sent.append(('down', key, f_key_watcher._self_pressing()))
+        PynputInteraction.send_key_up = lambda self, key: sent.append(('up', key, f_key_watcher._self_pressing()))
+        try:
+            f_key_watcher._self_held, f_key_watcher._self_until = False, 0.0
+            interaction = object.__new__(Pynput)
+            self.assertEqual(Pynput.__name__, 'Pynput', '设置里显示和保存的名字')
+            interaction.send_key('f', 0.01)
+            interaction.send_key_down('f', activate=False)
+            interaction.send_key_up('f')
+            self.assertEqual(sent, [('key', 'f', True), ('down', 'f', True), ('up', 'f', True)],
+                             '发 F 之前读键线程就要知道')
+            self.assertFalse(f_key_watcher._self_held)
+        finally:
+            for name, method in originals.items():
+                setattr(PynputInteraction, name, method)
+            f_key_watcher._self_held, f_key_watcher._self_until = False, 0.0
+
+    def test_config_offers_both_input_methods(self):
+        from config import config
+        from src.foreground_input import Pynput, SendInput
+        self.assertEqual(config['windows']['interaction'], ['PostMessage', SendInput, Pynput],
+                         '默认仍是后台 PostMessage')
+
 
 class CompatShellTest(unittest.TestCase):
     def test_shell_forwards_auto_combat_settings(self):

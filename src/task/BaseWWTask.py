@@ -1,6 +1,7 @@
 import math
 import re
 import time
+from collections import namedtuple
 from datetime import datetime, timedelta
 from typing import List
 
@@ -34,6 +35,13 @@ WIDE_MODE_UI_SCALE = 0.75
 # 编队界面的判据。team_close 是可交互按钮, 鼠标悬停时会放大变形, 匹配分数掉到 0.62;
 # team_start_challenge 在同一帧不随悬停变化, 且下一步本来就要点它。
 TEAM_SCREEN_FEATURES = ('team_start_challenge', 'team_close')
+# 素材获取列表里的一行 Boss：OCR 名字、名字框顶的 y 占比、这一行自己的按钮框(没有为 None)、是否梦魇聚落、
+# 按钮种类('go' 前往 / 'challenge' 直接挑战 / None 只认出按钮形状)
+BookRow = namedtuple('BookRow', 'name y btn nest kind')
+# 右边一个按钮：中心 y 占比、点击用的框、种类
+BookButton = namedtuple('BookButton', 'cy box kind')
+# 读一屏的结果：Boss 行、签名（翻到底判断用）、列表里所有字的高度（估露出多高用）
+BookPage = namedtuple('BookPage', 'rows sig text_ys')
 
 
 class BaseWWTask(BaseTask):
@@ -1024,10 +1032,30 @@ class BaseWWTask(BaseTask):
         self.send_key_up('alt')
         self.sleep(0.5)
 
+    # 素材获取左边的分类菜单。右边列表从 0.44 起，顶上提示条最左到 ~0.36，框到 0.33 为止不会读进来
+    BOOK_MENU_BOX = (0.0, 0.10, 0.33, 0.97)
+
+    def find_book_menu(self, name):
+        """左边菜单里分类标题（「战歌重奏」等）的框，没读到返回 None。"""
+        self.next_frame()
+        texts = self.ocr(*self.BOOK_MENU_BOX, name='boss_book_menu') or []
+        hits = [t for t in texts if BossBook.category_of_title(t.name) == name]
+        return min(hits, key=lambda t: t.y) if hits else None
+
     def open_boss_book(self, name, after_sleep=2):
         self.log_info(self.tr('open_boss_book {name}').format(name=name))
         x = 0.24
         self.sleep(0.4)
+        if name in BossBook.CATEGORY_TITLES:
+            # 按字点：活动往菜单里插入口时写死的高度会点到别的分类
+            menu = self.find_book_menu(name)
+            if menu is not None:
+                self.click_box(menu, after_sleep=after_sleep)
+                if name == 'mengyan':
+                    # 菜单最底下一项：旧代码也是点两下（第一下可能只把菜单滚上来）
+                    self.click_box(self.find_book_menu(name) or menu, after_sleep=after_sleep)
+                return
+            logger.info(f'open_boss_book {name}: menu title not read, use fixed position')
         if name == 'ningsu':
             y = 0.4
         elif name == 'moni':
@@ -1220,107 +1248,273 @@ class BaseWWTask(BaseTask):
                 raise Exception(self.tr('must be in game world and in teams'))
         return True
 
-    # 素材获取列表：名字列（含地区标题）和每行右侧「直接挑战/前往」按钮所在的竖条
-    BOOK_NAME_BOX = (0.44, 0.19, 0.70, 0.90)
-    BOOK_BUTTON_BOX = (0.9113, 0.229, 0.9613, 0.861)
-    # 名字框顶 → 同一行按钮顶，2K 实测 0.023~0.026；地区标题到下一行按钮 ≥0.09
-    BOOK_ROW_BUTTON_DY = (0.0, 0.06)
-    # 滚轮 1 格约 0.0244 屏高，一行 Boss 约 0.142；10 格 ≈1.7 行，一屏 4~5 行，翻页不会漏行
+    # 素材获取右边整块面板，从体力栏下面到屏幕底，不按「列表大概从哪开始」划窗口：
+    # 上方提示条多了少了、列表起点跟着上下挪都在框里，找名字、找按钮都在整块面板里找，再靠滚轮把目标滚出来。
+    # 横向只避开左边分类菜单（≤0.34，里面也有「战歌重奏」几个字）。
+    BOOK_NAME_BOX = (0.40, 0.10, 0.80, 0.97)
+    # 每行右侧「直接挑战/前往」按钮所在的竖条（模板认形状）
+    BOOK_BUTTON_BOX = (0.86, 0.10, 0.985, 0.97)
+    # 按钮上的字所在的竖条（左边是奖励图标和「直接挑战」前面的地图钉，都不是字）
+    BOOK_LABEL_BOX = (0.84, 0.10, 0.985, 0.97)
+    # 同一行：按钮中心在名字框顶往下 0~0.095 屏高以内，归离它最近的那个名字（量的是名字和按钮的相对距离，和列表从哪开始无关）。
+    # 2K 实测「前往」行 ≈0.05；「限时提前开放」分组的行按钮更靠下 ≈0.065；
+    # 分组标题到下一行按钮中心 ≥0.11，所以分组标题分不到按钮
+    BOOK_ROW_SPAN = 0.095
+    # 模板框和按钮字中心差不到这么多算同一个按钮（按钮高 ≈0.037，两行差 0.14）
+    BOOK_BUTTON_MERGE = 0.03
+    # 滚轮 1 格约 0.0244 屏高，一行 Boss 约 0.142。一次最多翻 10 格（≈1.7 行）；
+    # 列表露出来的部分越矮翻得越少：一行从名字顶到按钮底 ≈0.09，翻的距离不超过「露出高度 - 一行」，每一行都有一屏能整行露出来
     BOOK_SCROLL_TICKS = 10
+    BOOK_TICK_H = 0.0244
+    BOOK_ROW_FULL_H = 0.10
+    # 翻页后高度差不到这么多、字也差不多的文字不跟着列表滚：是列表外面的提示条
+    BOOK_FIXED_DY = 0.003
+    # 滚轮放在每行左半边名字那一段。中间那排奖励图标（x≈0.63~0.83）自己能横着滚，滚轮落在上面只滚图标、
+    # 列表不动，会被当成翻到底而报错（2026-11-22 实机截图）。列表没动时换到头像那一段（x≈0.39~0.45）再滚一次，
+    # 两处都不动才算到头；换过去能滚就以后都用那一处
+    BOOK_SCROLL_XS = (0.56, 0.42)
 
-    def _read_book_rows(self):
-        """当前画面列表里的行，从上往下 [(OCR 名字, 名字 y 占比, 同一行按钮或 None, 是否梦魇聚落)] 和全部按钮。
+    def _read_book_buttons(self):
+        """右边的按钮，从上往下 [BookButton]。
 
-        没按钮的是地区/分组标题，或被列表上沿裁掉一半的行（上一页已经完整读过）。
+        模板认按钮右端的形状（「前往」「直接挑战」都是同一种黑色圆角按钮），OCR 认按钮上的字分出是哪种；
+        模板没认出来的（比如悬停高亮）靠字补上。同一高度的合成一个，点击用模板框（实机点过）。
+        """
+        found = [BookButton((b.y + b.height / 2) / self.height, b, None)
+                 for b in self.find_feature('boss_proceed', box=self.box_of_screen(*self.BOOK_BUTTON_BOX),
+                                            threshold=0.8) or []]
+        for t in self.ocr(*self.BOOK_LABEL_BOX, name='boss_book_buttons') or []:
+            kind = BossBook.button_kind(t.name)
+            if kind is None:
+                continue
+            cy = (t.y + t.height / 2) / self.height
+            i = next((i for i, b in enumerate(found) if abs(b.cy - cy) <= self.BOOK_BUTTON_MERGE), None)
+            if i is None:
+                found.append(BookButton(cy, t, kind))
+            else:
+                found[i] = found[i]._replace(kind=kind)
+        return sorted(found, key=lambda b: b.cy)
+
+    def _note_fixed_texts(self, scan, names, buttons):
+        """和上一次读的比：列表动了（按钮位置变了），这几行字却一点没挪、字也差不多 → 是列表外面不跟着滚的提示条。
+
+        记下它们的高度，以后这几个高度上的字都不当 Boss 名（倒计时、次数这种字在变的也认得出）。
+        不认识的提示条也能这样分出来，不靠「上面有几条提示」去算列表从哪开始。
+        """
+        cur = [(BossBook.norm(t.name), t.y / self.height) for t in names]
+        cur_buttons = tuple(round(b.cy, 3) for b in buttons)
+        prev = scan.get('prev')
+        scan['prev'] = (cur, cur_buttons)
+        if not prev or not prev[1] or not cur_buttons or cur_buttons == prev[1]:
+            return  # 同一屏多读一帧 / 翻到底了：列表没动，分不出谁是固定的
+        for text, y in cur:
+            if any(abs(y - py) <= self.BOOK_FIXED_DY and BossBook.similar_text(text, ptext) for ptext, py in prev[0]):
+                if not any(abs(y - fy) <= self.BOOK_FIXED_DY for fy in scan['fixed_y']):
+                    scan['fixed_y'].append(y)
+                    logger.info(f'boss book: text at y={y:.3f} does not scroll ({text}), not a boss row')
+
+    def _read_book_rows(self, scan=None):
+        """当前画面列表里的行，返回 BookPage(从上往下的 [BookRow], 签名, 列表里所有字的高度)。
+
+        不靠位置、不靠分组顺序：每个按钮归它上方最近的名字（同一行），分到按钮的才是能点的 Boss 行。
+        分组标题（地区名、「限时提前开放」）分不到按钮；提示条（「剩余…次数」「筛选…」、翻页时不跟着滚的字）连名字都不算。
+        没按钮的名字还可能是被列表上沿/下沿裁掉一半的行（翻页后会完整读到）。
         聚落行下面一行是「已击败残象：0/36」这种进度，按进度认，不靠「聚落」两个字（外文客户端也能分）。
+        签名只拿按钮和 Boss 行算（翻页后不变 = 到底了）：提示条上的倒计时/次数每帧在变，不能把「到底」判断搅乱。
         """
         texts = sorted(self.ocr(*self.BOOK_NAME_BOX, name='boss_book_names') or [], key=lambda b: b.y)
-        btns = self.find_feature('boss_proceed', box=self.box_of_screen(*self.BOOK_BUTTON_BOX), threshold=0.8)
+        buttons = self._read_book_buttons()
         cjk_only = self.game_lang == 'zh_CN'
-        lo, hi = self.BOOK_ROW_BUTTON_DY
-        progress = [t.y / self.height for t in texts if BossBook.is_progress_text(t.name)]
+        fixed_y = []
+        if scan is not None:
+            self._note_fixed_texts(scan, [t for t in texts if BossBook.is_candidate_text(t.name, cjk_only)], buttons)
+            fixed_y = scan['fixed_y']
+        texts = [t for t in texts if not any(abs(t.y / self.height - fy) <= self.BOOK_FIXED_DY for fy in fixed_y)]
+        progress = [t.y / self.height for t in texts
+                    if BossBook.is_progress_text(t.name) and not BossBook.is_banner_text(t.name)]
+        names = [t for t in texts if BossBook.is_candidate_text(t.name, cjk_only) and not BossBook.is_banner_text(t.name)]
+        owner = {}
+        for button in buttons:
+            above = [i for i, t in enumerate(names) if 0 <= button.cy - t.y / self.height <= self.BOOK_ROW_SPAN]
+            if above:
+                owner.setdefault(max(above, key=lambda i: names[i].y), button)
         rows = []
-        for t in texts:
-            if not BossBook.is_candidate_text(t.name, cjk_only):
-                continue
+        for i, t in enumerate(names):
             ty = t.y / self.height
-            btn = next((b for b in btns if lo <= b.y / self.height - ty <= hi), None)
+            button = owner.get(i)
             nest = '聚落' in t.name or any(0.03 <= py - ty <= 0.10 for py in progress)
-            rows.append((t.name, ty, btn, nest))
-        return rows, btns
+            rows.append(BookRow(t.name, ty, button.box if button else None, nest, button.kind if button else None))
+        sig = (tuple(round(b.cy, 2) for b in buttons), tuple(BossBook.norm(r.name) for r in rows if r.btn is not None))
+        return BookPage(rows, sig, [t.y / self.height for t in texts if not BossBook.is_banner_text(t.name)])
+
+    @staticmethod
+    def _book_scroll_y(page):
+        """滚轮放在列表上：本屏 Boss 行的中间高度。上方提示条再多，滚轮也不会落到提示条上滚不动。"""
+        ys = [r.y for r in page.rows if r.btn is not None] or [r.y for r in page.rows]
+        if not ys:
+            return 0.6
+        return min(0.92, (min(ys) + max(ys)) / 2 + 0.04)
+
+    def _book_scroll_ticks(self, page):
+        """这一屏往下翻几格。列表露出来的高度按这一屏估：最上面一行 Boss 名到最下面的字（只会估矮不会估高）。"""
+        ys = [r.y for r in page.rows if r.btn is not None] or [r.y for r in page.rows]
+        if not ys or not page.text_ys:
+            return self.BOOK_SCROLL_TICKS
+        shown = max(page.text_ys) - min(ys)
+        return max(2, min(self.BOOK_SCROLL_TICKS, int((shown - self.BOOK_ROW_FULL_H) / self.BOOK_TICK_H)))
+
+    @staticmethod
+    def _target_rows(rows, category, target):
+        """本页名字对得上 target 的行 [(距离, 行)]。只差一个字的另一个 Boss（如 xx·今州 / xx·梦州）不算。"""
+        others = [n for n in BossBook.known_names(category) if not BossBook.same_name(n, target)]
+        hits = []
+        for row in rows:
+            d = BossBook.match_distance(row.name, target)
+            if d is None or (d > 0 and BossBook.nearer_to_other(row.name, d, others)):
+                continue
+            hits.append((d, row))
+        return hits
 
     @staticmethod
     def _pick_book_row(rows, category, target, serial, seen, nests):
-        """本页能点的目标行 (名字, 按钮)，没有返回 None。"""
+        """本页能点的目标行 BookRow，没有返回 None。"""
         if target:
-            others = [n for n in BossBook.known_names(category) if not BossBook.same_name(n, target)]
-            best = None
-            for name, _, btn, _ in rows:
-                d = BossBook.match_distance(name, target)
-                if d is None or (d > 0 and BossBook.nearer_to_other(name, d, others)):
-                    continue  # 只差一个字的另一个 Boss（如 xx·今州 / xx·梦州）不能当成目标
-                if best is None or d < best[0]:
-                    best = (d, name, btn)
-            # 名字看到了但按钮还在列表下沿外：继续往下翻一页再点
-            return (best[1], best[2]) if best and best[2] is not None else None
+            # 同一个 Boss 可能出现两次（「限时提前开放」里一行、地区里一行）：取有按钮的，名字最像的，再取靠上的
+            hits = [(d, row) for d, row in BaseWWTask._target_rows(rows, category, target) if row.btn is not None]
+            return min(hits, key=lambda h: (h[0], h[1].y))[1] if hits else None
         eligible = [s for s in seen if not (category == 'mengyan' and BossBook.norm(s) in nests)]
         if serial < 1 or len(eligible) < serial:
             return None
         want = eligible[serial - 1]
-        for name, _, btn, _ in rows:
-            if btn is not None and BossBook.same_name(name, want):
-                return name, btn
-        return None
+        return next((row for row in rows if row.btn is not None and BossBook.same_name(row.name, want)), None)
+
+    def _scan_book_page(self, scan, category, target, frames=1):
+        """读当前这一屏（frames 帧，记进 scan），返回第一帧的 BookPage。"""
+        first = None
+        for i in range(frames):
+            if i:
+                self.sleep(0.3)
+            self.next_frame()
+            page = self._read_book_rows(scan)
+            first = first or page
+            for row in page.rows:
+                if row.btn is None:
+                    continue
+                key = BossBook.norm(row.name)
+                if row.nest:
+                    scan['nests'].add(key)
+                scan['reads'][key] = scan['reads'].get(key, 0) + 1
+                if not any(BossBook.same_name(row.name, s) for s in scan['seen']):
+                    scan['seen'].append(row.name)
+            if target:
+                # 名字下面还有别的能点的行（说明这一行的按钮该露出来了）却没有按钮：多半是没解锁，报错时说清楚
+                for _, row in self._target_rows(page.rows, category, target):
+                    if row.btn is None and any(r.btn is not None and r.y > row.y for r in page.rows):
+                        scan['no_button'].add(BossBook.display_name(row.name))
+        return first
+
+    @staticmethod
+    def _new_book_scan(keep=None):
+        # seen: 有按钮的行从上往下去重；nests: 梦魇聚落（规范化名字），特异梦魇按序号数时跳过；
+        # reads: 规范化文本 -> 读到次数，学新名字只认读到 2 次的，防 OCR 错字进下拉框；
+        # no_button: 看到了但没按钮的目标；fixed_y: 不跟着列表滚的提示条高度；prev: 上一次读到的字和按钮（认提示条用）
+        # scroll_xs: 滚轮放哪（第一个滚不动换第二个，能滚的那个换到前面）
+        scan = {'seen': [], 'nests': set(), 'reads': {}, 'no_button': set(), 'fixed_y': [], 'prev': None,
+                'scroll_xs': list(BaseWWTask.BOOK_SCROLL_XS)}
+        if keep:
+            scan['no_button'] |= keep['no_button']
+            for key in ('fixed_y', 'prev', 'scroll_xs'):
+                scan[key] = keep[key]
+        return scan
+
+    def _scroll_book(self, scan, page, ticks, x=None):
+        self.scroll_relative(x or scan['scroll_xs'][0], self._book_scroll_y(page), ticks)
+        self.sleep(0.6)
+
+    def _book_scroll_retry(self, scan, page, ticks, read):
+        """滚了列表却没动：换个地方再滚一次。动了返回 read() 的新结果并记住这个地方，还是不动返回 None。"""
+        alt = scan['scroll_xs'][1]
+        logger.info(f'boss book: list did not move, scroll again at x={alt}')
+        self._scroll_book(scan, page, ticks, x=alt)
+        new = read()
+        if new.sig == page.sig:
+            return None
+        scan['scroll_xs'].reverse()
+        return new
+
+    def _scroll_book_to_top(self, scan, page, max_scrolls=8):
+        """往上滚到列表顶。返回 (动过没有, 最后一屏的签名)。
+
+        一次都没滚动时换个地方再试一次再认定本来就在顶上（滚轮可能落在能横着滚的奖励图标上）。
+        """
+        def read():
+            self.next_frame()
+            return self._read_book_rows(scan)
+
+        moved = False
+        for _ in range(max_scrolls):
+            self._scroll_book(scan, page, self.BOOK_SCROLL_TICKS * 3)
+            new = read()
+            if new.sig == page.sig and not moved:
+                new = self._book_scroll_retry(scan, page, self.BOOK_SCROLL_TICKS * 3, read) or new
+            if new.sig == page.sig:
+                break
+            moved, page = True, new
+        return moved, page.sig
 
     def click_book_target_by_name(self, category, target='', serial=0, max_pages=30):
-        """在已打开的素材获取分类里找 Boss，点它那一行的「直接挑战/前往」，返回点到的 OCR 名字。
+        """在已打开的素材获取分类里找 Boss，点它那一行自己的「直接挑战/前往」，返回点到的 OCR 名字。
 
         target 非空按名字模糊匹配（容 OCR 错 1 个字）；为空时数第 serial 个有按钮的行
-        （特异梦魇不数聚落，外文客户端走这条）。只用滚轮往下翻、每页 OCR，不依赖列表总数和滚动条位置，
-        游戏新加 Boss 不会点歪；找不到就报错并列出读到的名字，不会随便点一个。
+        （特异梦魇不数聚落，外文客户端走这条）。不依赖行号、分组顺序、列表总数、滚动条位置，也不依赖列表从哪开始：
+        上面插了「限时提前开放」分组或任意多条提示、提示文字在变、Boss 行整体上移下移，都是在整块面板里按名字找，
+        找到名字再点它下面同一行的按钮；滚轮跟着列表走，翻页步长按露出来的列表高度定。
+        先看当前这一屏（列表可能停在上次的位置），没有就滚到顶，再一屏屏往下翻；
+        翻到底还没有就报错（列出读到的名字 / 说明哪一行没按钮），不会随便点一个；最多翻 max_pages 屏（按 10 格一屏算）。
         """
         self.sleep(0.5)
-        seen = []  # 有按钮的行，从上往下去重
-        nests = set()  # 梦魇聚落行（规范化名字）；特异梦魇按序号数时跳过
-        reads = {}  # 规范化文本 -> 读到次数；学新名字只认读到 2 次的，防 OCR 错字进下拉框
-        last_sig = None
-        for page in range(max_pages):
-            self.next_frame()
-            rows, btns = self._read_book_rows()
-            frames = [rows]
-            if page == 0:
-                # 最上面两行只在第一页出现，多读一帧凑够 2 次（新 Boss 一般排在最上面）
-                self.sleep(0.3)
-                self.next_frame()
-                frames.append(self._read_book_rows()[0])
-            for frame_rows in frames:
-                for name, _, btn, nest in frame_rows:
-                    if btn is None:
-                        continue
-                    key = BossBook.norm(name)
-                    if nest:
-                        nests.add(key)
-                    reads[key] = reads.get(key, 0) + 1
-                    if not any(BossBook.same_name(name, s) for s in seen):
-                        seen.append(name)
-            hit = self._pick_book_row(rows, category, target, serial, seen, nests)
-            if hit:
-                name, btn = hit
-                self._learn_book_names(category, seen, reads, nests)
-                self.log_info(self.tr('boss book: clicked {name}').format(
-                    name=BossBook.option_label(category, BossBook.display_name(name))))
-                self.draw_boxes(boxes=btn, color="red")
-                self.click(btn, after_sleep=1)
-                return name
-            sig = tuple(round(b.y / self.height, 2) for b in btns)
-            if page > 0 and sig == last_sig:
-                break  # 翻不动了，到底
-            last_sig = sig
-            self.scroll_relative(0.65, 0.6, -self.BOOK_SCROLL_TICKS)
-            self.sleep(0.6)
-        self._learn_book_names(category, seen, reads, nests)
-        names = '、'.join(BossBook.option_label(category, BossBook.display_name(s)) for s in seen)
+        scan = self._new_book_scan()
+        # 最上面两行只在第一屏出现，多读一帧凑够 2 次（新 Boss 一般排在最上面）
+        page = self._scan_book_page(scan, category, target, frames=2)
+        hit = self._pick_book_row(page.rows, category, target, serial, scan['seen'], scan['nests']) if target else None
+        if hit is None:
+            moved, sig = self._scroll_book_to_top(scan, page)
+            if moved:
+                logger.info('boss book: list was not at top, scrolled up and read again')
+                scan = self._new_book_scan(keep=scan)
+                page = self._scan_book_page(scan, category, target, frames=2)
+            hit = self._pick_book_row(page.rows, category, target, serial, scan['seen'], scan['nests'])
+        sig = page.sig
+        budget = max_pages * self.BOOK_SCROLL_TICKS
+        while hit is None and budget > 0:
+            ticks = min(self._book_scroll_ticks(page), budget)
+            budget -= ticks
+            self._scroll_book(scan, page, -ticks)
+            new = self._scan_book_page(scan, category, target)
+            if new.sig == sig:
+                # 列表没动：先换个地方再滚一次（滚轮可能被奖励图标那排吃掉了），还不动才是到底
+                new = self._book_scroll_retry(scan, page, -ticks,
+                                              lambda: self._scan_book_page(scan, category, target)) or new
+            page = new
+            hit = self._pick_book_row(page.rows, category, target, serial, scan['seen'], scan['nests'])
+            if hit is None and page.sig == sig:
+                break  # 两处都翻不动了，到底
+            sig = page.sig
+        self._learn_book_names(category, scan['seen'], scan['reads'], scan['nests'])
+        if hit is not None:
+            label = BossBook.option_label(category, BossBook.display_name(hit.name))
+            button = BossBook.BUTTON_LABEL[hit.kind]
+            self.book_button_kind = hit.kind
+            self.log_info(self.tr('boss book: clicked {name} ({button})').format(name=label, button=button))
+            logger.info(f'boss book: row {hit.name} y={hit.y:.3f} button={hit.kind} box={hit.btn}')
+            self.draw_boxes(boxes=hit.btn, color="red")
+            self.click(hit.btn, after_sleep=1)
+            return hit.name
         wanted = BossBook.option_label(category, target) if target else f'#{serial}'
+        if scan['no_button']:
+            raise Exception(self.tr('boss book: {wanted} is in the list but has no Go/Challenge button').format(
+                wanted=wanted))
+        names = '、'.join(BossBook.option_label(category, BossBook.display_name(s)) for s in scan['seen'])
         raise Exception(self.tr('boss book: {wanted} not found, list has: {names}').format(wanted=wanted, names=names))
 
     def _learn_book_names(self, category, seen, reads, nests):
@@ -1414,9 +1608,16 @@ class BaseWWTask(BaseTask):
         return feature.name in TEAM_SCREEN_FEATURES
 
     def wait_after_book_click(self):
-        """点了「直接挑战/前往」之后：队伍界面返回 True，地图传送界面返回 False。"""
+        """点了「直接挑战/前往」之后：队伍/等级界面返回 True，地图传送界面返回 False，10 秒都没等到就报错。
+
+        「前往」打开地图传送；「限时提前开放」里的「直接挑战」直接进挑战界面。
+        """
         feature = self.wait_feature(['fast_travel_custom', 'gray_teleport', 'remove_custom', *TEAM_SCREEN_FEATURES],
-                                    time_out=10, settle_time=0.5, raise_if_not_found=True)
+                                    time_out=10, settle_time=0.5, raise_if_not_found=False)
+        if not feature:
+            button = BossBook.BUTTON_LABEL[getattr(self, 'book_button_kind', None)]
+            raise Exception(self.tr('boss book: clicked {button}, but neither map nor challenge screen opened').format(
+                button=button))
         return feature.name in TEAM_SCREEN_FEATURES
 
     def change_time_to_night(self):

@@ -277,29 +277,40 @@ def team_runs_custom_code(team):
     但跑的照样是自定义代码; 列表前面的圆点按这个画。"""
     class_names = normalize_team(team)
     try:
-        for class_name, char_cls in _team_char_classes(class_names).items():
-            current = read_team_char_code(class_names, char_cls).replace("\r\n", "\n")
-            if current != read_builtin_char_code(char_cls).replace("\r\n", "\n"):
-                return True
+        return _differs_from_builtin(class_names)
     except Exception as e:
         logger.error(f"compare team code with built in failed for {class_names}: {e}")
         return True
+
+
+def _differs_from_builtin(class_names):
+    for class_name, char_cls in _team_char_classes(class_names).items():
+        current = read_team_char_code(class_names, char_cls).replace("\r\n", "\n")
+        if current != read_builtin_char_code(char_cls).replace("\r\n", "\n"):
+            return True
     return False
 
 
 def normalize_team_code(team):
-    """Complete the imported copies older versions left behind half written.
+    """Give a team the imported copies it should have.
 
     Imported copies are all or nothing, and the import mode needs them. Missing
     copies are filled from the current code; nothing is deleted or overwritten.
     Returns the member names that got a copy.
+
+    直接写进队伍目录、没走过导入的轴(工坊上传过但本地没导入的也是这样)一份副本都没有,
+    以前一直算「未导入」, 「切换全部」会跳过, 切到内置还会把轴覆盖掉。它跑的就是自定义代码,
+    所以把当前代码整队存成导入代码、切到导入模式; 和内置一模一样的队伍没东西可存, 不动。
     """
     class_names = normalize_team(team)
     present = [name for name in class_names if get_team_import_file(class_names, name).is_file()]
     if len(present) == len(class_names):
         return []
     if not present and get_team_code_mode(class_names) != TEAM_CODE_MODE_IMPORT:
-        return []
+        if not _differs_from_builtin(class_names):
+            return []
+        save_team_code_as_import(class_names, {})
+        return list(class_names)
     filled = []
     for class_name in class_names:
         if class_name in present:
@@ -319,7 +330,7 @@ def normalize_custom_teams():
             logger.error(f"normalize team code failed for {team}: {e}")
             continue
         if filled:
-            logger.info(f"filled missing imported copies of {team}: {filled}")
+            logger.info(f"kept current code as imported copies of {team}: {filled}")
             normalized[team] = filled
     return normalized
 
@@ -397,14 +408,18 @@ def switch_all_teams_code_mode(target):
 
     Teams whose current code neither side keeps are skipped as well, switching
     them would drop that code; they are reported to be switched one by one.
-    Returns {"target", "switched", "already", "drifted", "failed"} for the caller to summarise.
+    Returns {"target", "switched", "already", "drifted", "kept", "failed"} for the caller to summarise.
+
+    导入模式下 .py 被直接改过(和导入副本对不上)的队伍, 跑着的就是改过的代码:
+    切内置之前先把它整队存成导入代码(kept), 切回来还是它。内置模式下对不上的照旧跳过。
     """
     if target not in (TEAM_CODE_MODE_IMPORT, TEAM_CODE_MODE_BUILTIN):
         raise ValueError(f"Unsupported code mode: {target}")
-    switched, already, drifted, failed = [], [], [], []
+    switched, already, drifted, kept, failed = [], [], [], [], []
     for team in list_custom_teams():
         class_names = normalize_team(team)
         try:
+            normalize_team_code(class_names)
             state = team_code_state(class_names)
             if state == TEAM_CODE_STATE_NONE:
                 continue
@@ -412,14 +427,18 @@ def switch_all_teams_code_mode(target):
                 already.append(class_names)
                 continue
             if drifted_team_members(class_names):
-                drifted.append(class_names)
-                continue
+                if state != TEAM_CODE_MODE_IMPORT:
+                    drifted.append(class_names)
+                    continue
+                save_team_code_as_import(class_names, {})
+                kept.append(class_names)
             switch_team_code_mode(class_names, target)
             switched.append(class_names)
         except Exception as e:
             logger.error(f"switch all teams code mode failed for {class_names}: {e}")
             failed.append((class_names, e))
-    return {"target": target, "switched": switched, "already": already, "drifted": drifted, "failed": failed}
+    return {"target": target, "switched": switched, "already": already, "drifted": drifted, "kept": kept,
+            "failed": failed}
 
 
 def _team_char_classes(class_names):
@@ -454,7 +473,8 @@ def _write_team_code(team, codes, import_codes=None, mode=None):
     backups = {path: path.read_text(encoding="utf-8") if path.is_file() else None for path in touched}
     try:
         for path, code in writes.items():
-            path.write_text(code, encoding="utf-8")
+            # 按 LF 原样写: 文本模式会改成 CRLF, 仓库里跟踪的队伍文件来回切一圈就全成了"已修改"
+            path.write_text(code, encoding="utf-8", newline="")
         clear_team_char_cache(class_names)
         for class_name in codes:
             _load_team_char_class_from_file(

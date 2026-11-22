@@ -7,6 +7,7 @@ from src.combat.FKeyStart import F_EXTRA_LIFETIME, f_key_watcher, float_config
 from src.scene.WWScene import WWScene
 from src.task.BaseCombatTask import BaseCombatTask, NotInCombatException, CharDeadException
 from src.task.task_icons import task_icon
+from src import timer_precision
 
 logger = Logger.get_logger(__name__)
 
@@ -234,6 +235,9 @@ class AutoCombatTask(BaseCombatTask, TriggerTask):
         combat_start = time.time()
         switched_to_healer = False
         while self.in_combat():
+            if not ret:
+                # 这时游戏在前台、coco-ww 被挡住: 正是 Windows 11 会丢掉计时精度的情况, 后台量一次留日志
+                timer_precision.report_async('进战斗')
             ret = True
             try:
                 if not switched_to_healer:

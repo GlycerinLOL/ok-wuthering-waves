@@ -136,6 +136,70 @@ def same_name(a, b):
     return match_distance(a, b) is not None or match_distance(b, a) is not None
 
 
+def similar_text(a, b):
+    """两段已规范化的字差不多（提示条上倒计时、次数在变也算同一条）。"""
+    if a == b:
+        return True
+    if not a or not b:
+        return False
+    return edit_distance(a, b) <= max(1, min(len(a), len(b)) // 3)
+
+
+# 列表里不是 Boss 行的提示条和分组标题。2026-11 实机「战歌重奏」页：最上面多了「剩余战歌重奏双倍奖励次数：6/6」
+# 和「限时提前开放」分组（主线没推到也能提前打的 Boss），把原来的地区分组和 Boss 行整体往下挤。
+# Boss 名里没有这些字；就算这种条子旁边以后带了按钮，也不能当成 Boss 行去数、去学名字。
+_BANNER = re.compile(r'提前开放|提前開放|次数|次數|筛选|篩選|奖励|獎勵|剩余|剩餘|索拉等级|索拉等級|活动|活動|'
+                     r'Early\s*Access|Remaining|Filter', re.IGNORECASE)
+
+
+def is_banner_text(text):
+    return bool(text) and bool(_BANNER.search(text))
+
+
+# 每行右边的按钮：地区里解锁了的是「前往」(打开地图传送)，「限时提前开放」分组里是「直接挑战」(直接进挑战界面)
+_BUTTON_KINDS = (('challenge', re.compile(r'^(直接)?挑[战戰]$|^Challenge$', re.IGNORECASE)),
+                 ('go', re.compile(r'^前往$|^(Go|Proceed)$', re.IGNORECASE)))
+BUTTON_LABEL = {'challenge': '直接挑战', 'go': '前往', None: '按钮'}
+
+
+def button_kind(text):
+    """按钮上的字 → 'challenge' / 'go'；不是按钮字返回 None。"""
+    t = _NON_WORD.sub('', text or '')
+    return next((kind for kind, pattern in _BUTTON_KINDS if pattern.match(t)), None)
+
+
+# 素材获取左边的分类菜单（简/繁）。活动会往这一栏插入口，按字找，找不到才退回写死的位置。
+CATEGORY_TITLES = {
+    'moni': ('模拟领域', '模擬領域'),
+    'ningsu': ('凝素领域', '凝素領域'),
+    'qiangdi': ('讨伐强敌', '討伐強敵'),
+    'zhange': ('战歌重奏', '戰歌重奏'),
+    'wuyin': ('无音清剿', '無音清剿'),
+    'canxiang': ('残象聚落', '殘象聚落'),
+    'mengyan': ('梦魇祓除', '夢魘祓除'),
+}
+
+
+def _title_norm(text):
+    return _NON_WORD.sub('', (text or '').translate(_CONFUSABLE))
+
+
+def category_of_title(text):
+    """左边菜单里读到的字是哪个分类（整条只差 1 个字以内才算），否则 None。
+
+    「产出高级技能材料」这种副标题、右边「剩余战歌重奏双倍奖励次数」这种长条都不算。
+    """
+    t = _title_norm(text)
+    if not 3 <= len(t) <= 5:
+        return None
+    best = None
+    for category, titles in CATEGORY_TITLES.items():
+        d = min(edit_distance(t, _title_norm(title)) for title in titles)
+        if d <= 1 and (best is None or d < best[0]):
+            best = (d, category)
+    return best[1] if best else None
+
+
 def _read_learned():
     try:
         with open(LEARNED_FILE, encoding='utf-8') as f:

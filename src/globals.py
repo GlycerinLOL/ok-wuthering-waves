@@ -10,6 +10,9 @@ logger = Logger.get_logger(__name__)
 class Globals:
 
     def __init__(self, exit_event):
+        # 框架 sleep 的短等待默认按 15.6ms 取整, 程序一起来就把本进程的计时精度提到 1ms
+        from src import timer_precision
+        timer_precision.apply()
         self._yolo_model = None
         self.mini_map_arrow = None
         self.logged_in = False

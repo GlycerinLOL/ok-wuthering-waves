@@ -4,6 +4,7 @@ from pathlib import Path
 
 from ok import Box, ConfigOption, Icon
 from ok.util.GlobalConfig import create_basic_options
+from src.foreground_input import Pynput, SendInput
 from src.game_launcher import get_game_launch_arguments
 from src.task.process_feature import process_feature
 from src.task.task_icons import task_icon
@@ -220,7 +221,8 @@ config = {
         'launch_arguments': get_game_launch_arguments,
         'exe': 'Client-Win64-Shipping.exe',
         'hwnd_class': 'UnrealWindow',
-        'interaction': ['PostMessage', 'Pynput'],
+        # fork: coco-ww v1.0.6 foreground input; SendInput (coco) + Pynput subclass that reports self-pressed F
+        'interaction': ['PostMessage', SendInput, Pynput],
         'capture_method': ['WGC', 'WGC_HDR','BitBlt_RenderFull'],  # Windows版本支持的话, 优先使用WGC, 否则使用BitBlt_Full
         'check_hdr': False,
         'force_no_hdr': False,
