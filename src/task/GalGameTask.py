@@ -50,10 +50,10 @@ class GalGameTask(BaseTask):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.name = "3.8 GalGame"
-        self.description = "从「第二索拉：未名之梦」活动页开始，推进学期并领取可用活动奖励。仅支持简体中文。"
+        self.description = "从「第二索拉：未名之梦」活动页开始，推进学期并领取可用活动奖励。仅支持简体、繁体中文。"
         self.group_name = "Daily Activities"
         self.group_icon = task_icon("category-daily")
-        self.supported_languages = ["zh_CN"]
+        self.supported_languages = ["zh_CN", "zh_TW"]
 
     def _read(self):
         self.next_frame()

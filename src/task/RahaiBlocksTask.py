@@ -19,10 +19,10 @@ class RahaiBlocksTask(BaseTask):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.name = "3.8 拉海洛方块·逆转"
-        self.description = "从活动关卡列表开始，挑战所有已解锁且未通关的关卡。请保持简体中文 PC 客户端在前台。"
+        self.description = "从活动关卡列表开始，挑战所有已解锁且未通关的关卡。请保持简体或繁体中文 PC 客户端在前台。"
         self.group_name = "Daily Activities"
         self.group_icon = task_icon("category-daily")
-        self.supported_languages = ["zh_CN"]
+        self.supported_languages = ["zh_CN", "zh_TW"]
 
     def _event_title(self):
         return self.ocr(.045, .04, .2, .09, match=re.compile(r"拉海洛方块"))
@@ -62,9 +62,10 @@ class RahaiBlocksTask(BaseTask):
         stages_after = self.wait_until(self._stage_list, time_out=5)
         if not stages_after:
             raise RuntimeError("滑动后无法识别拉海洛方块关卡列表。")
+        # Cards sit on a fixed pitch, so a whole-card scroll leaves every x unchanged; compare names too.
         moved = len(stages_after) != len(stages) or any(
-            abs(before.x - after.x) > .005 * self.width
-            for (_, before), (_, after) in zip(stages, stages_after)
+            before.name != after.name or abs(before.x - after.x) > .005 * self.width
+            for (before, _), (after, _) in zip(stages, stages_after)
         )
         return stages_after, moved
 
@@ -148,7 +149,7 @@ class RahaiBlocksTask(BaseTask):
             raise RuntimeError("拉海洛方块需要 16:9 的 Windows PC 客户端。")
         stages = self.wait_until(self._stage_list, time_out=5)
         if not stages:
-            raise RuntimeError("请先打开简体中文的「拉海洛方块·逆转」活动关卡列表。")
+            raise RuntimeError("请先打开「拉海洛方块·逆转」活动关卡列表。")
         interaction = PynputInteraction(self.executor.device_manager.capture_method, self.hwnd)
         if not interaction.clickable():
             self.hwnd.bring_to_front()
