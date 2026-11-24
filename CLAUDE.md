@@ -1,7 +1,7 @@
 # CLAUDE.md — ok-ww fork（GlycerinLOL）
 
 《鳴潮》影像辨識自動化工具，基於 PyPI `ok-script` 框架。Windows-only。
-這是 `ok-oldking/ok-wuthering-waves` 的個人 fork：**自用開發 + 定期同步上游**。
+這是 `ok-oldking/ok-wuthering-waves` 的個人 fork：**自用開發 + 定期同步兩個上游**：`ok-oldking`（`git merge`）與 `wk321425/coco-ww`（挑選移植，見「Fork / 上游同步」）。
 詳細架構分析見 `fork-notes/project-analysis.md`；`AGENTS.md`（上游）一併適用，但本機 venv 是 Windows venv：一律用 `./.venv/Scripts/python.exe`，AGENTS.md / `use-local-venv` 的 POSIX 分支（`./.venv/bin/python`、退回 `python`）不適用。
 
 ## 環境（最重要）
@@ -72,6 +72,12 @@ Claude Code 不會自動載入 `.agents/skills/`，依任務手動讀對應 `SKI
   - 上游 d0a59291（v3.8.5）整套移除自訂角色與無音清剿；fork 全數保留並自行維護：`CustomCharLoader.py`、`CharacterCodeTask.py`、`src/web/character_code/`、`TacetEliminationTask.py`、`CharFactory.apply_team_char_classes` 與 `BaseCombatTask` 內的呼叫、`config.py` 的 Tacet 任務項、i18n 對應條目。上游改到這些檔時要保留 fork 這側。
   - 2026-11 併入 coco-ww（wk321425/coco-ww e199e23，AGPL）：`src/recorder/`、`src/combat/FKeyStart.py`/`AxisWatch.py`、`src/char/TeamVariants.py`、`src/task/BossBook.py`、`tools/char_fuzz.py`，以及 `BaseChar`/`BaseCombatTask`/`CombatCheck`/`BaseWWTask`/`FarmEchoTask`/約 40 個角色檔的改動，fork 自行維護（上游同步在這些熱檔會常衝突）。工坊改用 `wk321425/coco-ww-char-code`。`BaseWWTask` 刻意保留舊的 `click_on_book_target`/`click_team_challenge`（Forgery/Tacet/NightmareNest/Simulation 還在用）。coco 的中文 config key（`按 F 开始战斗` 等）是刻意的例外，隊伍代碼會讀，不要改成英文。
   - 2026-11-22 併入 coco v1.0.4–v1.0.6 部分：BossBook 選 Boss 修正、CustomCharLoader 保留改過的代碼、`src/foreground_input.py`（SendInput/Pynput 前台輸入 + FKeyStart 自按 F 過濾）、`src/timer_precision.py`。沒拿：HomeTab/DashboardTab/top_nav（要改 vendored ok/）、release workflow、configs/ 隊伍軸。coco 原始碼用 `git fetch --no-tags https://github.com/wk321425/coco-ww.git 'refs/tags/vX:refs/coco/vX'` 取，以上次併入的 tag 當 base 做 3-way（`git merge-file`，coco 部分檔案是 CRLF，先轉 LF）。
+- **coco-ww 也是上游**：每次同步 ok-oldking 時一併檢查，不能只看 `upstream/master`。
+  - 檢查新版：`git ls-remote --tags https://github.com/wk321425/coco-ww.git`，與下面的「已併入」比對；有新 tag 就 fetch 到 `refs/coco/vX`，看 `git diff -w refs/coco/<已併入> refs/coco/<新版>`。
+  - 只挑移植，不整包 merge：coco 底子是 ok-oldking v3.8.0 並 vendored `ok/`、`pyappify/`。先查改動是否已在 ok-oldking 或目前安裝的 ok-script 內。
+  - 已併入：v1.0.6（4b4f5e0a，部分）。已評估未併：v1.0.7（08f5cbe2，2026-11-24）。併入或評估後更新這一行。
+  - v1.0.7 評估：ok-script 兩項（錯誤截圖、後台輸入不重複 activate）已在 ok-script 3.0.11；`_travel_to_nearest_waypoint` 已有（upstream #1849）。可移植：`src/net_ssl.py` + `CharacterCodeTab` 工坊請求（獨立小改）；`MacroKit.py` + `CustomCharLoader` 內聯/收回 + `BaseChar.precise_wait`/`PreciseWaitPaused` + `release_held_inputs(wait_pause)`（同一組，現有自帶 `macro_wait` 的隊伍代碼用不到）。不拿：線上更新/release index/workflow、`pyappify/`、`ok/`、configs/ 隊伍軸。
+  - 未併 MacroKit 前：coco 匯出的 zip 已內聯可匯入；但直接複製 coco v1.0.7 `configs/custom_teams` 的 `.py` 會因 `from src.combat.MacroKit import` 失敗。
 - 功能開 branch（`feat/...`、`fix/...`），完成後 merge 回 master。
 - 降低衝突：優先新增檔案，少改熱檔（`BaseCombatTask.py`、`BaseWWTask.py`、`FarmEchoTask.py`、`CharFactory.py`、`BaseChar.py`）；`config.py` 任務清單只在尾端追加；不做順手格式化/重構。
 - 本檔用 `git add -f CLAUDE.md` 追蹤（上游 `.gitignore` 忽略它，同步不會衝突）。不要改上游 `.gitignore`；本機雜項（`.omc/`）放 `.git/info/exclude`。
