@@ -50,11 +50,12 @@ class Suisui(BaseChar):
             self.cycle_start()
             if not self.has_intro:
                 if self.try_e():
-                    return self.switch_next_char()
+                    return  # do_perform switches; a second switch would clear the next char's has_intro
             self.click()
             self.cycle_sleep(self.ATTACK_INTERVAL)
         else:
             self.logger.warning('Suisui forte3 detection timed out')
+            self.task.screenshot('suisui_forte3_timeout')
             return
 
         liberation_clicked = False
